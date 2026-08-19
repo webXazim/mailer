@@ -1,0 +1,55 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/auth",
+  "crates/config",
+  "crates/db",
+  "crates/storage",
+  "services/api",
+  "services/worker",
+]
+
+[workspace.package]
+edition = "2021"
+license = "Proprietary"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1.0"
+argon2 = "0.5"
+async-nats = "0.42"
+aws-config = "1.8"
+aws-sdk-sesv2 = "1.84"
+aws-sdk-sqs = "1.84"
+aws-sdk-s3 = "1.84"
+axum = "0.8"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde", "clock"] }
+config = { package = "cs-mail-config", path = "crates/config" }
+auth = { package = "cs-mail-auth", path = "crates/auth" }
+db = { package = "cs-mail-db", path = "crates/db" }
+storage = { package = "cs-mail-storage", path = "crates/storage" }
+futures = "0.3"
+hex = "0.4"
+hmac = "0.12"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "native-tokio", "ring", "tls12"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+mail-builder = "0.4"
+rsa = { version = "0.9", features = ["sha1", "sha2"] }
+sha1 = "0.10"
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+trust-dns-resolver = { version = "0.23", default-features = false, features = ["tokio-runtime"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "json", "chrono", "migrate", "macros"] }
+tokio = { version = "1.44", features = ["macros", "rt-multi-thread", "signal", "net", "time"] }
+tower-http = { version = "0.6", features = ["catch-panic", "cors", "request-id", "trace", "set-header", "timeout"] }
+tower-service = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+uuid = { version = "1.16", features = ["v4", "serde"] }
+url = "2.5"
+x509-cert = { version = "0.2", features = ["pem"] }

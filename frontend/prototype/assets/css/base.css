@@ -1,0 +1,11 @@
+body { background: var(--color-bg); color: var(--color-text); font-family: var(--font-sans); line-height: 1.45; -webkit-font-smoothing: antialiased; }
+h1, h2, p { margin: 0; }
+h1 { font-size: 28px; letter-spacing: 0; line-height: 1.2; font-weight: 700; }
+h2 { font-size: 15px; letter-spacing: 0; line-height: 1.35; font-weight: 700; }
+button, a, input, select, textarea { outline-color: var(--color-primary); outline-offset: 2px; }
+code { color: var(--color-text-soft); font: 12px/1.3 var(--font-mono); }
+.eyebrow { color: var(--color-muted); font-size: 11px; letter-spacing: .06em; line-height: 1.2; text-transform: uppercase; font-weight: 600; }
+.muted { color: var(--color-muted); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+*:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; } }

@@ -1,0 +1,168 @@
+name: crescentsphere-mailer
+
+x-app-environment: &app-environment
+  APP_ENV: ${APP_ENV:-development}
+  HTTP_ADDR: 0.0.0.0:8080
+  DATABASE_URL: ${DATABASE_URL:-postgres://mailer:mailer@postgres:5432/mailer}
+  NATS_URL: ${NATS_URL:-nats://mailer:mailer-development@nats:4222}
+  CONSOLE_ORIGIN: ${CONSOLE_ORIGIN:-http://localhost:8081}
+  INTERNAL_API_URL: ${INTERNAL_API_URL:-http://api:8080}
+  RUST_LOG: ${RUST_LOG:-info,sqlx=warn}
+  DB_MIN_CONNECTIONS: ${DB_MIN_CONNECTIONS:-2}
+  DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:-10}
+  DB_ACQUIRE_TIMEOUT_SECONDS: ${DB_ACQUIRE_TIMEOUT_SECONDS:-5}
+  EVENT_INGEST_TOKEN: ${EVENT_INGEST_TOKEN:-development-event-token-change-me}
+  WEBHOOK_SIGNING_MASTER_KEY: ${WEBHOOK_SIGNING_MASTER_KEY:-development-webhook-master-key-change-me}
+  AWS_REGION: ${AWS_REGION:-me-south-1}
+  DOMAIN_PROVIDER: ${DOMAIN_PROVIDER:-disabled}
+  SES_EVENTS_QUEUE_URL: ${SES_EVENTS_QUEUE_URL:-}
+  SES_EVENTS_TOPIC_ARN: ${SES_EVENTS_TOPIC_ARN:-}
+  OBJECT_STORAGE_PROVIDER: ${OBJECT_STORAGE_PROVIDER:-disabled}
+  OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT:-}
+  OBJECT_STORAGE_REGION: ${OBJECT_STORAGE_REGION:-auto}
+  OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:-}
+  OBJECT_STORAGE_ACCESS_KEY_ID: ${OBJECT_STORAGE_ACCESS_KEY_ID:-}
+  OBJECT_STORAGE_SECRET_ACCESS_KEY: ${OBJECT_STORAGE_SECRET_ACCESS_KEY:-}
+  EMAIL_CONTENT_RETENTION_DAYS: ${EMAIL_CONTENT_RETENTION_DAYS:-30}
+  API_KEY_RATE_LIMIT_PER_MINUTE: ${API_KEY_RATE_LIMIT_PER_MINUTE:-60}
+  CLIENT_IP_RATE_LIMIT_PER_MINUTE: ${CLIENT_IP_RATE_LIMIT_PER_MINUTE:-300}
+  TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
+  WORKSPACE_MONTHLY_EMAIL_LIMIT: ${WORKSPACE_MONTHLY_EMAIL_LIMIT:-100000}
+  WORKSPACE_CONCURRENT_EMAIL_LIMIT: ${WORKSPACE_CONCURRENT_EMAIL_LIMIT:-100}
+
+services:
+  api:
+    build:
+      context: ./backend
+      target: api
+    image: crescentsphere/mailer-api:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    init: true
+    environment:
+      <<: *app-environment
+      AWS_ACCESS_KEY_ID: ${API_AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${API_AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${API_AWS_SESSION_TOKEN:-}
+    ports:
+      - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    pids_limit: 256
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    stop_grace_period: 30s
+    logging: &app-logging
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    networks: [edge, internal]
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8080}
+    image: crescentsphere/mailer-frontend:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${FRONTEND_BIND_ADDRESS:-127.0.0.1}:${FRONTEND_PORT:-8081}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    pids_limit: 128
+    read_only: true
+    tmpfs: ["/var/cache/nginx:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=700", "/var/run:rw,noexec,nosuid,size=1m,uid=101,gid=101,mode=700"]
+    stop_grace_period: 15s
+    logging: *app-logging
+    networks: [edge]
+
+  worker:
+    build:
+      context: ./backend
+      target: worker
+    image: crescentsphere/mailer-worker:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    init: true
+    environment:
+      <<: *app-environment
+      AWS_ACCESS_KEY_ID: ${WORKER_AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${WORKER_AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${WORKER_AWS_SESSION_TOKEN:-}
+    depends_on:
+      api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    pids_limit: 256
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    stop_grace_period: 60s
+    logging: *app-logging
+    networks: [edge, internal]
+
+  postgres:
+    image: postgres:16.10-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mailer}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mailer}
+      POSTGRES_DB: ${POSTGRES_DB:-mailer}
+    volumes:
+      - mailer-postgres:/var/lib/postgresql/data
+    shm_size: 256mb
+    stop_grace_period: 60s
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    logging: *app-logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [internal]
+
+  nats:
+    image: nats:2.11.8-alpine
+    restart: unless-stopped
+    command: ["-js", "-sd", "/data", "--http_port", "8222", "--user", "${NATS_USER:-mailer}", "--pass", "${NATS_PASSWORD:-mailer-development}"]
+    volumes:
+      - mailer-nats:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8222/healthz?js-enabled-only=true"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [internal]
+    stop_grace_period: 30s
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    pids_limit: 128
+    logging: *app-logging
+
+volumes:
+  mailer-postgres:
+  mailer-nats:
+
+networks:
+  edge:
+  internal:
+    internal: true

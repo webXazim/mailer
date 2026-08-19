@@ -1,0 +1,118 @@
+mod delivery;
+mod events;
+mod lifecycle;
+mod maintenance;
+mod outbox;
+mod webhook;
+
+use config::Settings;
+use tokio::signal;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let settings = Settings::from_env()?;
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::new(
+            settings.log_level.clone(),
+        ))
+        .with(tracing_subscriber::fmt::layer().json())
+        .init();
+    let db = db::connect(&settings).await?;
+    db::ping(&db).await?;
+    let nats = async_nats::connect(&settings.nats_url).await?;
+    nats.flush().await?;
+    let jetstream = async_nats::jetstream::new(nats);
+    let aws = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .region(aws_config::Region::new(settings.aws_region.clone()))
+        .load()
+        .await;
+    let ses = aws_sdk_sesv2::Client::new(&aws);
+    let object_store = storage::ObjectStore::from_settings(&settings).await?;
+    let sqs = aws_sdk_sqs::Client::new(&aws);
+    let stale = sqlx::query("UPDATE emails SET status = 'failed', completed_at = now(), processing_started_at = NULL, last_error = 'ambiguous stale provider attempt; manual review required' WHERE status = 'processing' AND processing_started_at < now() - interval '15 minutes'")
+        .execute(&db).await?;
+    if stale.rows_affected() > 0 {
+        tracing::warn!(
+            count = stale.rows_affected(),
+            "stale delivery claims marked failed for manual review"
+        );
+    }
+    tracing::info!(
+        database = "connected",
+        nats = "connected",
+        region = %settings.aws_region,
+        "delivery worker started"
+    );
+    let outbox = tokio::spawn(outbox::run(db.clone(), jetstream.clone()));
+    let mut delivery = tokio::spawn(delivery::run(
+        db.clone(),
+        jetstream.clone(),
+        ses,
+        object_store,
+    ));
+    let lifecycle = tokio::spawn(lifecycle::run(
+        db.clone(),
+        storage::ObjectStore::from_settings(&settings).await?,
+        settings.email_content_retention_days,
+    ));
+    let maintenance = tokio::spawn(maintenance::run(db.clone()));
+    let mut webhook = tokio::spawn(webhook::run(
+        db,
+        jetstream,
+        settings.webhook_signing_master_key.clone(),
+    ));
+    let mut events = settings.ses_events_queue_url.clone().map(|queue_url| {
+        tokio::spawn(events::run(
+            sqs.clone(),
+            queue_url,
+            settings.ses_events_topic_arn.clone(),
+            settings.internal_api_url.clone(),
+            settings.event_ingest_token.clone(),
+            settings.aws_region.clone(),
+        ))
+    });
+    tokio::select! {
+        _ = shutdown_signal() => {},
+        result = &mut delivery => {
+            match result { Ok(Ok(())) => tracing::warn!("delivery loop stopped"), Ok(Err(error)) => tracing::error!(error = %error, "delivery loop failed"), Err(error) => tracing::error!(error = %error, "delivery task panicked") }
+        }
+        result = &mut webhook => {
+            match result { Ok(Ok(())) => tracing::warn!("webhook loop stopped"), Ok(Err(error)) => tracing::error!(error = %error, "webhook loop failed"), Err(error) => tracing::error!(error = %error, "webhook task panicked") }
+        }
+        result = async { match &mut events { Some(task) => Some(task.await), None => std::future::pending::<Option<Result<Result<(), anyhow::Error>, tokio::task::JoinError>>>().await } } => {
+            if let Some(result) = result { match result { Ok(Ok(())) => tracing::warn!("SES event transport stopped"), Ok(Err(error)) => tracing::error!(error = %error, "SES event transport failed"), Err(error) => tracing::error!(error = %error, "SES event transport panicked") } }
+        }
+    }
+    outbox.abort();
+    delivery.abort();
+    webhook.abort();
+    if let Some(task) = events {
+        task.abort();
+    }
+    lifecycle.abort();
+    maintenance.abort();
+    tracing::info!("worker stopped");
+    Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler")
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+}

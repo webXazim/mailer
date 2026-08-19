@@ -1,0 +1,38 @@
+[package]
+name = "cs-mail-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+auth.workspace = true
+async-nats.workspace = true
+aws-config.workspace = true
+aws-sdk-sesv2.workspace = true
+aws-sdk-sqs.workspace = true
+base64.workspace = true
+chrono.workspace = true
+config.workspace = true
+db.workspace = true
+futures.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-rustls.workspace = true
+hyper-util.workspace = true
+mail-builder.workspace = true
+rsa.workspace = true
+sha1.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+storage.workspace = true
+tokio.workspace = true
+tower-service.workspace = true
+trust-dns-resolver.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+uuid.workspace = true
+x509-cert.workspace = true

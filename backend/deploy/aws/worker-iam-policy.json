@@ -1,0 +1,25 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "SendFromVerifiedMailerIdentities",
+      "Effect": "Allow",
+      "Action": ["ses:SendEmail"],
+      "Resource": [
+        "arn:aws:ses:me-south-1:ACCOUNT_ID:identity/*",
+        "arn:aws:ses:me-south-1:ACCOUNT_ID:configuration-set/CONFIGURATION_SET_NAME"
+      ]
+    },
+    {
+      "Sid": "ConsumeMailerEvents",
+      "Effect": "Allow",
+      "Action": [
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:ChangeMessageVisibility",
+        "sqs:GetQueueAttributes"
+      ],
+      "Resource": "arn:aws:sqs:me-south-1:ACCOUNT_ID:crescentsphere-mailer-events"
+    }
+  ]
+}

@@ -1,0 +1,65 @@
+{
+    admin off
+    email admin@crescentsphere.com
+}
+
+mailer.crescentsphere.com {
+    encode zstd gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    reverse_proxy 127.0.0.1:8081
+
+    log {
+        output file /var/log/caddy/mailer-console-access.log {
+            roll_size 20MiB
+            roll_keep 5
+            roll_keep_for 168h
+        }
+        format json
+    }
+}
+
+api.mailer.crescentsphere.com {
+    encode zstd gzip
+
+    @internal path /internal/*
+    respond @internal 404
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "no-referrer"
+        -Server
+    }
+
+    request_body {
+        max_size 36MB
+    }
+
+    reverse_proxy 127.0.0.1:8080 {
+        header_up X-Real-IP {remote_host}
+        header_up -X-Forwarded-For
+        header_up -Forwarded
+        transport http {
+            dial_timeout 5s
+            response_header_timeout 35s
+        }
+    }
+
+    log {
+        output file /var/log/caddy/mailer-api-access.log {
+            roll_size 20MiB
+            roll_keep 5
+            roll_keep_for 168h
+        }
+        format json
+    }
+}

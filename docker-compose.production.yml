@@ -1,0 +1,22 @@
+services:
+  frontend:
+    build: null
+    image: ${FRONTEND_IMAGE:?Set FRONTEND_IMAGE to an immutable image tag}
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-8081}:8080"
+
+  api:
+    build: null
+    image: ${API_IMAGE:?Set API_IMAGE to an immutable image tag}
+    ports:
+      - "127.0.0.1:${API_PORT:-8080}:8080"
+
+  worker:
+    build: null
+    image: ${WORKER_IMAGE:?Set WORKER_IMAGE to an immutable image tag}
+
+  postgres:
+    ports: []
+
+  nats:
+    ports: []

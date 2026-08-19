@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f7f8fa" />
+    <title>Signal Mail - Overview</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="assets/css/tokens.css" />
+    <link rel="stylesheet" href="assets/css/reset.css" />
+    <link rel="stylesheet" href="assets/css/base.css" />
+    <link rel="stylesheet" href="assets/css/layout.css" />
+    <link rel="stylesheet" href="assets/css/components.css" />
+    <script src="https://unpkg.com/lucide@latest"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar__top">
+          <a class="brand" href="index.html" aria-label="Signal Mail home">
+            <span class="brand__mark">S</span>
+            <span class="brand__name">signal<span>mail</span></span>
+          </a>
+          <button class="icon-button sidebar__close" type="button" data-sidebar-close aria-label="Close navigation" title="Close navigation">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+
+        <div class="workspace-switcher">
+          <div class="workspace-switcher__avatar">AC</div>
+          <div class="workspace-switcher__copy">
+            <span class="eyebrow">Workspace</span>
+            <strong>Acme Cloud</strong>
+          </div>
+          <i data-lucide="chevrons-up-down"></i>
+        </div>
+
+        <nav class="nav" aria-label="Primary navigation">
+          <span class="nav__label">Workspace</span>
+          <a class="nav__item nav__item--active" href="index.html"><i data-lucide="layout-dashboard"></i><span>Overview</span></a>
+          <a class="nav__item" href="#emails"><i data-lucide="send"></i><span>Emails</span><span class="nav__count">24</span></a>
+          <a class="nav__item" href="domains.html"><i data-lucide="globe-2"></i><span>Domains</span></a>
+          <a class="nav__item" href="#templates"><i data-lucide="file-code-2"></i><span>Templates</span></a>
+          <a class="nav__item" href="#webhooks"><i data-lucide="webhook"></i><span>Webhooks</span></a>
+
+          <span class="nav__label nav__label--spaced">Configuration</span>
+          <a class="nav__item" href="#api-keys"><i data-lucide="key-round"></i><span>API keys</span></a>
+          <a class="nav__item" href="#suppressions"><i data-lucide="shield-ban"></i><span>Suppressions</span></a>
+
+          <span class="nav__label nav__label--spaced">Account</span>
+          <a class="nav__item" href="#team"><i data-lucide="users"></i><span>Team</span></a>
+          <a class="nav__item" href="#settings"><i data-lucide="settings-2"></i><span>Settings</span></a>
+        </nav>
+
+        <div class="sidebar__bottom">
+          <div class="usage-card">
+            <div class="usage-card__heading"><span>Monthly usage</span><i data-lucide="ellipsis"></i></div>
+            <strong>184,290 <span>/ 250k</span></strong>
+            <div class="progress"><span style="width: 73.7%"></span></div>
+            <div class="usage-card__footer"><span>73.7% used</span><a href="#billing">Manage plan</a></div>
+          </div>
+          <a class="profile-link" href="#profile">
+            <span class="profile-link__avatar">AM</span>
+            <span class="profile-link__copy"><strong>Alex Morgan</strong><small>Owner</small></span>
+            <i data-lucide="more-horizontal"></i>
+          </a>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <button class="icon-button menu-trigger" type="button" data-sidebar-open aria-label="Open navigation" title="Open navigation"><i data-lucide="menu"></i></button>
+          <div class="breadcrumb"><span>Workspace</span><i data-lucide="chevron-right"></i><strong>Overview</strong></div>
+          <div class="topbar__actions">
+            <button class="icon-button" type="button" aria-label="Search" title="Search"><i data-lucide="search"></i></button>
+            <button class="icon-button has-indicator" type="button" aria-label="Notifications" title="Notifications"><i data-lucide="bell"></i><span></span></button>
+            <div class="topbar__divider"></div>
+            <button class="avatar-button" type="button" aria-label="Open account menu" title="Open account menu">AM</button>
+          </div>
+        </header>
+
+        <div class="page-wrap">
+          <section class="page-heading">
+            <div>
+              <p class="eyebrow">Tuesday, August 18, 2026</p>
+              <h1>Good morning, Alex</h1>
+              <p class="page-heading__sub">Here is what is happening across your sending infrastructure.</p>
+            </div>
+            <div class="page-heading__actions">
+              <button class="button button--secondary" type="button"><i data-lucide="download"></i>Export</button>
+              <button class="button button--primary" type="button" data-modal-open><i data-lucide="plus"></i>Send email</button>
+            </div>
+          </section>
+
+          <section class="metric-grid" aria-label="Email performance">
+            <article class="metric-card">
+              <div class="metric-card__top"><span class="metric-card__label">Emails sent</span><span class="metric-icon metric-icon--blue"><i data-lucide="send"></i></span></div>
+              <strong class="metric-card__value">184,290</strong>
+              <div class="metric-card__trend metric-card__trend--up"><i data-lucide="trending-up"></i> 12.8% <span>vs. last month</span></div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-card__top"><span class="metric-card__label">Delivery rate</span><span class="metric-icon metric-icon--green"><i data-lucide="check-check"></i></span></div>
+              <strong class="metric-card__value">99.42<span>%</span></strong>
+              <div class="metric-card__trend metric-card__trend--up"><i data-lucide="trending-up"></i> 0.18% <span>vs. last month</span></div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-card__top"><span class="metric-card__label">Bounce rate</span><span class="metric-icon metric-icon--amber"><i data-lucide="corner-up-left"></i></span></div>
+              <strong class="metric-card__value">0.31<span>%</span></strong>
+              <div class="metric-card__trend metric-card__trend--down"><i data-lucide="trending-down"></i> 0.07% <span>vs. last month</span></div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-card__top"><span class="metric-card__label">Avg. delivery time</span><span class="metric-icon metric-icon--violet"><i data-lucide="timer"></i></span></div>
+              <strong class="metric-card__value">1.8<span>s</span></strong>
+              <div class="metric-card__trend metric-card__trend--up"><i data-lucide="trending-down"></i> 0.4s <span>faster this month</span></div>
+            </article>
+          </section>
+
+          <section class="content-grid content-grid--primary">
+            <article class="panel chart-panel">
+              <div class="panel__header">
+                <div><h2>Sending activity</h2><p>Volume and delivery performance over the last 30 days</p></div>
+                <button class="select-button" type="button">Last 30 days <i data-lucide="chevron-down"></i></button>
+              </div>
+              <div class="chart-legend"><span><i class="legend-dot legend-dot--blue"></i>Sent</span><span><i class="legend-dot legend-dot--green"></i>Delivered</span></div>
+              <div class="chart" role="img" aria-label="Sending activity chart showing an upward trend across 30 days">
+                <div class="chart__y-axis"><span>15k</span><span>10k</span><span>5k</span><span>0</span></div>
+                <div class="chart__plot">
+                  <div class="chart__gridline" style="top: 0"></div><div class="chart__gridline" style="top: 33.33%"></div><div class="chart__gridline" style="top: 66.66%"></div><div class="chart__gridline" style="top: 100%"></div>
+                  <svg class="chart__svg" viewBox="0 0 720 220" preserveAspectRatio="none" aria-hidden="true">
+                    <defs><linearGradient id="areaFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#2563eb" stop-opacity=".16"/><stop offset="1" stop-color="#2563eb" stop-opacity="0"/></linearGradient></defs>
+                    <path class="chart__area" d="M0 179 C27 166 39 174 61 158 S96 155 121 143 S153 157 180 130 S220 134 240 119 S276 121 300 109 S336 118 361 95 S394 101 420 87 S458 93 480 73 S513 81 540 65 S575 74 600 50 S639 58 660 39 S697 41 720 22 L720 220 L0 220Z" />
+                    <path class="chart__line chart__line--blue" d="M0 179 C27 166 39 174 61 158 S96 155 121 143 S153 157 180 130 S220 134 240 119 S276 121 300 109 S336 118 361 95 S394 101 420 87 S458 93 480 73 S513 81 540 65 S575 74 600 50 S639 58 660 39 S697 41 720 22" />
+                    <path class="chart__line chart__line--green" d="M0 187 C27 176 39 181 61 168 S96 165 121 153 S153 166 180 141 S220 144 240 130 S276 131 300 119 S336 127 361 105 S394 110 420 98 S458 103 480 84 S513 91 540 76 S575 83 600 62 S639 68 660 50 S697 53 720 35" />
+                  </svg>
+                  <div class="chart__x-axis"><span>Jul 20</span><span>Jul 25</span><span>Jul 30</span><span>Aug 04</span><span>Aug 09</span><span>Aug 14</span><span>Aug 18</span></div>
+                </div>
+              </div>
+            </article>
+
+            <article class="panel health-panel">
+              <div class="panel__header"><div><h2>Sending health</h2><p>Current status across your domains</p></div><a class="text-link" href="domains.html">View domains <i data-lucide="arrow-up-right"></i></a></div>
+              <div class="health-score"><div class="health-score__ring"><span>98</span><small>/100</small></div><div><strong>Excellent</strong><p>Your sending reputation is healthy.</p></div></div>
+              <div class="health-list">
+                <div class="health-row"><span><i class="status-dot status-dot--green"></i>SPF records</span><strong>3 / 3</strong></div>
+                <div class="health-row"><span><i class="status-dot status-dot--green"></i>DKIM signatures</span><strong>3 / 3</strong></div>
+                <div class="health-row"><span><i class="status-dot status-dot--amber"></i>DMARC policy</span><strong>2 / 3</strong></div>
+                <div class="health-row"><span><i class="status-dot status-dot--green"></i>Suppression rate</span><strong>0.08%</strong></div>
+              </div>
+            </article>
+          </section>
+
+          <section class="panel activity-panel">
+            <div class="panel__header"><div><h2>Recent activity</h2><p>The latest messages moving through your account</p></div><a class="text-link" href="#emails">View all emails <i data-lucide="arrow-up-right"></i></a></div>
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead><tr><th>Message</th><th>Recipient</th><th>Domain</th><th>Status</th><th>Sent</th><th><span class="sr-only">Actions</span></th></tr></thead>
+                <tbody>
+                  <tr><td><div class="message-cell"><span class="message-cell__icon"><i data-lucide="mail"></i></span><span><strong>Welcome to Acme Cloud</strong><code>msg_01H9K8D4QW</code></span></div></td><td>jordan@northstar.io</td><td><code>mail.acme.dev</code></td><td><span class="status status--delivered"><i data-lucide="check"></i>Delivered</span></td><td class="muted">2 min ago</td><td><button class="icon-button icon-button--small" type="button" aria-label="Open message" title="Open message"><i data-lucide="arrow-up-right"></i></button></td></tr>
+                  <tr><td><div class="message-cell"><span class="message-cell__icon"><i data-lucide="mail"></i></span><span><strong>Payment received</strong><code>msg_01H9K8BW2F</code></span></div></td><td>finance@orionlabs.co</td><td><code>mail.acme.dev</code></td><td><span class="status status--delivered"><i data-lucide="check"></i>Delivered</span></td><td class="muted">8 min ago</td><td><button class="icon-button icon-button--small" type="button" aria-label="Open message" title="Open message"><i data-lucide="arrow-up-right"></i></button></td></tr>
+                  <tr><td><div class="message-cell"><span class="message-cell__icon"><i data-lucide="mail"></i></span><span><strong>Reset your password</strong><code>msg_01H9K7YPQ9</code></span></div></td><td>samira@atlas.design</td><td><code>notify.acme.dev</code></td><td><span class="status status--pending"><i data-lucide="clock-3"></i>Processing</span></td><td class="muted">14 min ago</td><td><button class="icon-button icon-button--small" type="button" aria-label="Open message" title="Open message"><i data-lucide="arrow-up-right"></i></button></td></tr>
+                  <tr><td><div class="message-cell"><span class="message-cell__icon"><i data-lucide="mail"></i></span><span><strong>Your weekly report</strong><code>msg_01H9K7V1MX</code></span></div></td><td>team@northstar.io</td><td><code>mail.acme.dev</code></td><td><span class="status status--bounced"><i data-lucide="x"></i>Bounced</span></td><td class="muted">27 min ago</td><td><button class="icon-button icon-button--small" type="button" aria-label="Open message" title="Open message"><i data-lucide="arrow-up-right"></i></button></td></tr>
+                  <tr><td><div class="message-cell"><span class="message-cell__icon"><i data-lucide="mail"></i></span><span><strong>Invitation to Acme Cloud</strong><code>msg_01H9K7M2ZA</code></span></div></td><td>lee@cinder.app</td><td><code>mail.acme.dev</code></td><td><span class="status status--delivered"><i data-lucide="check"></i>Delivered</span></td><td class="muted">42 min ago</td><td><button class="icon-button icon-button--small" type="button" aria-label="Open message" title="Open message"><i data-lucide="arrow-up-right"></i></button></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <footer class="page-footer"><span>Signal Mail <span class="footer-dot">.</span> All systems operational</span><span>Last updated just now</span></footer>
+        </div>
+      </main>
+    </div>
+
+    <div class="modal-backdrop" data-modal hidden>
+      <section class="modal" role="dialog" aria-modal="true" aria-labelledby="send-title">
+        <div class="modal__header"><div><p class="eyebrow">Quick action</p><h2 id="send-title">Send a test email</h2></div><button class="icon-button" type="button" data-modal-close aria-label="Close dialog" title="Close dialog"><i data-lucide="x"></i></button></div>
+        <form class="form-stack" data-send-form>
+          <label class="field"><span>From</span><select><option>Acme Cloud &lt;hello@mail.acme.dev&gt;</option></select></label>
+          <label class="field"><span>To</span><input type="email" placeholder="you@example.com" required /></label>
+          <label class="field"><span>Subject</span><input type="text" value="A test email from Signal Mail" required /></label>
+          <label class="field"><span>Message</span><textarea rows="4">This is a test message sent from your Signal Mail workspace.</textarea></label>
+          <div class="modal__footer"><button class="button button--secondary" type="button" data-modal-close>Cancel</button><button class="button button--primary" type="submit"><i data-lucide="send"></i>Send test</button></div>
+        </form>
+      </section>
+    </div>
+    <script src="assets/js/prototype.js"></script>
+  </body>
+</html>

@@ -1,0 +1,12 @@
+[Unit]
+Description=CrescentSphere Mailer public health and internal-route check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/crescentsphere-mailer
+EnvironmentFile=/opt/crescentsphere-mailer/.env
+ExecStart=/opt/crescentsphere-mailer/backend/deploy/monitor.sh
+PrivateTmp=true
+NoNewPrivileges=true

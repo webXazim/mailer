@@ -86,11 +86,21 @@ async fn ingest(
     {
         Ok(Some(value)) => value,
         Ok(None) => {
+            let account: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM account_emails WHERE provider_message_id=$1)",
+            )
+            .bind(&event.message_id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap_or(false);
+            if account {
+                return Json(json!({"data":{"accepted":true,"accountEmail":true}})).into_response();
+            }
             return error(
                 StatusCode::NOT_FOUND,
                 "email_not_found",
                 "No email matches this provider message ID",
-            )
+            );
         }
         Err(error_value) => {
             tracing::error!(error = %error_value, provider_message_id = %event.message_id, "failed to resolve SES email");
@@ -103,7 +113,25 @@ async fn ingest(
     };
     let email_id: Uuid = email.get("id");
     let workspace_id: Uuid = email.get("workspace_id");
-    let payload = serde_json::to_value(&event).unwrap_or_else(|_| json!({}));
+    let mut payload = serde_json::to_value(&event).unwrap_or_else(|_| json!({}));
+    let context: (String, serde_json::Value) =
+        match sqlx::query_as("SELECT environment, metadata FROM emails WHERE id = $1")
+            .bind(email_id)
+            .fetch_one(&mut *tx)
+            .await
+        {
+            Ok(value) => value,
+            Err(_) => {
+                return error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "database_unavailable",
+                    "Unable to load email context",
+                )
+            }
+        };
+    payload["emailId"] = json!(email_id);
+    payload["environment"] = json!(context.0);
+    payload["metadata"] = context.1;
     let mut inserted = 0_u64;
     for recipient in recipients {
         let provider_event_id = recipient.as_ref().map_or_else(

@@ -17,14 +17,13 @@ use sqlx::Row;
 use std::{
     future::Future,
     io,
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
 };
 use tower_service::Service;
 use trust_dns_resolver::{config::ResolverConfig, TokioAsyncResolver};
-use url::Url;
 use uuid::Uuid;
 
 const MAX_DELIVERIES: i32 = 8;
@@ -73,7 +72,7 @@ impl Service<Name> for PublicResolver {
                 .await
                 .map_err(io::Error::other)?
                 .iter()
-                .filter(|address| !is_private_ip(*address))
+                .filter(|address| auth::is_public_ip(*address))
                 .map(|address| SocketAddr::new(address, 0))
                 .collect();
             if addresses.is_empty() {
@@ -87,7 +86,12 @@ impl Service<Name> for PublicResolver {
     }
 }
 
-pub async fn run(pool: db::DbPool, context: jetstream::Context, master_key: String) -> Result<()> {
+pub async fn run(
+    pool: db::DbPool,
+    context: jetstream::Context,
+    master_key: String,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) -> Result<()> {
     let stream = context
         .get_or_create_stream(jetstream::stream::Config {
             name: "MAILER_WEBHOOKS".into(),
@@ -124,8 +128,14 @@ pub async fn run(pool: db::DbPool, context: jetstream::Context, master_key: Stri
         .pool_idle_timeout(Duration::from_secs(30))
         .build(https);
     let dispatcher = tokio::spawn(dispatch_due(pool.clone(), context.clone()));
-    let mut messages = consumer.messages().await?;
-    while let Some(message) = messages.next().await {
+    let mut messages = consumer
+        .stream()
+        .max_messages_per_batch(1)
+        .messages()
+        .await?;
+    loop {
+        let message = tokio::select! { _=stop.changed()=>break,value=messages.next()=>value };
+        let Some(message) = message else { break };
         let message = match message {
             Ok(value) => value,
             Err(error) => {
@@ -218,10 +228,13 @@ where
         occurred_at: row.get("occurred_at"),
         data: row.get("payload"),
     };
-    let url = Url::parse(&delivery.url)?;
+    let url = match auth::public_webhook_url(&delivery.url) {
+        Ok(url) => url,
+        Err(_) => return Ok(Outcome::Failed(None, "Unsafe webhook destination".into())),
+    };
     let body = serde_json::to_vec(&serde_json::json!({
         "id": delivery.event_id,
-        "type": delivery.event_type,
+        "type": format!("email.{}", delivery.event_type),
         "createdAt": delivery.occurred_at,
         "data": delivery.data,
     }))?;
@@ -250,24 +263,6 @@ where
     } else {
         Outcome::Failed(Some(status.as_u16()), format!("webhook returned {status}"))
     })
-}
-
-fn is_private_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(value) => {
-            value.is_private()
-                || value.is_loopback()
-                || value.is_link_local()
-                || value.is_unspecified()
-                || value.is_broadcast()
-        }
-        IpAddr::V6(value) => {
-            value.is_loopback()
-                || value.is_unspecified()
-                || value.is_unique_local()
-                || value.is_unicast_link_local()
-        }
-    }
 }
 
 async fn record_success(pool: &db::DbPool, id: Uuid, status: u16) -> Result<()> {

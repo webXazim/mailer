@@ -48,7 +48,8 @@ enum Outcome {
     AlreadyHandled,
 }
 
-enum ProviderFailure {
+#[derive(Debug)]
+pub(crate) enum ProviderFailure {
     Retryable(String),
     Ambiguous(String),
     Permanent(String),
@@ -59,6 +60,8 @@ pub async fn run(
     context: jetstream::Context,
     ses: aws_sdk_sesv2::Client,
     object_store: Option<storage::ObjectStore>,
+    configuration_set: Option<String>,
+    mut stop: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
     let stream = context
         .get_or_create_stream(jetstream::stream::Config {
@@ -91,8 +94,15 @@ pub async fn run(
             },
         )
         .await?;
-    let mut messages = consumer.messages().await?;
-    while let Some(message) = messages.next().await {
+    let mut messages = consumer
+        .stream()
+        .max_messages_per_batch(1)
+        .messages()
+        .await?;
+    loop {
+        let message =
+            tokio::select! { _ = stop.changed() => break, value = messages.next() => value };
+        let Some(message) = message else { break };
         let message = match message {
             Ok(value) => value,
             Err(error) => {
@@ -111,7 +121,7 @@ pub async fn run(
                     &message.payload,
                     format!("invalid job: {error}"),
                 )
-                .await;
+                .await?;
                 message
                     .double_ack()
                     .await
@@ -119,9 +129,15 @@ pub async fn run(
                 continue;
             }
         };
-        let outcome = process(&pool, &ses, object_store.as_ref(), job.email_id)
-            .await
-            .unwrap_or_else(|error| Outcome::Retry(error.to_string()));
+        let outcome = process(
+            &pool,
+            &ses,
+            object_store.as_ref(),
+            configuration_set.as_deref(),
+            job.email_id,
+        )
+        .await
+        .unwrap_or_else(|error| Outcome::Retry(error.to_string()));
         match outcome {
             Outcome::Sent(provider_id) => {
                 tracing::info!(email_id = %job.email_id, provider_message_id = %provider_id, "email sent");
@@ -138,7 +154,7 @@ pub async fn run(
             }
             Outcome::Retry(reason) if delivered < MAX_DELIVERIES => {
                 tracing::warn!(email_id = %job.email_id, delivery = delivered, error = %reason, "email send will retry");
-                reset_for_retry(&pool, job.email_id, &reason).await;
+                reset_for_retry(&pool, job.email_id, &reason).await?;
                 message
                     .ack_with(AckKind::Nak(Some(Duration::from_secs(retry_delay(
                         delivered,
@@ -147,7 +163,7 @@ pub async fn run(
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
             }
             Outcome::Retry(reason) | Outcome::Failed(reason) => {
-                fail_email(&pool, job.email_id, &reason).await;
+                fail_email(&pool, job.email_id, &reason).await?;
                 record_dead_letter(
                     &pool,
                     &context,
@@ -155,7 +171,7 @@ pub async fn run(
                     &message.payload,
                     reason,
                 )
-                .await;
+                .await?;
                 message
                     .double_ack()
                     .await
@@ -170,6 +186,7 @@ async fn process(
     pool: &db::DbPool,
     ses: &aws_sdk_sesv2::Client,
     object_store: Option<&storage::ObjectStore>,
+    configuration_set: Option<&str>,
     email_id: Uuid,
 ) -> Result<Outcome> {
     let claimed = sqlx::query("UPDATE emails SET status = 'processing', processing_started_at = now(), processing_attempts = processing_attempts + 1, last_error = NULL WHERE id = $1 AND status = 'queued' RETURNING id, environment, sender, subject, text_body, html_body, raw_object_key, content_checksum, reply_to")
@@ -183,9 +200,7 @@ async fn process(
         .await?;
         return Ok(match state {
             None => Outcome::Failed("email record not found".into()),
-            Some(row) if row.get::<String, _>("status") == "processing" => Outcome::Failed(
-                "ambiguous previous provider attempt; manual review required".into(),
-            ),
+            Some(row) if row.get::<String, _>("status") == "processing" => Outcome::AlreadyHandled,
             Some(_) => Outcome::AlreadyHandled,
         });
     };
@@ -273,21 +288,34 @@ async fn process(
             _ => {}
         }
     }
-    let provider_id = if email.environment == "test" {
-        format!("test_{}", email.id)
-    } else {
-        match send_ses(ses, &email).await {
-            Ok(value) => value,
-            Err(ProviderFailure::Retryable(reason)) => return Ok(Outcome::Retry(reason)),
-            Err(ProviderFailure::Permanent(reason)) => return Ok(Outcome::Failed(reason)),
-            Err(ProviderFailure::Ambiguous(reason)) => {
-                return Ok(Outcome::Failed(format!(
-                    "ambiguous provider result; manual review required: {reason}"
-                )))
-            }
+    let suppressed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM suppressions s JOIN emails e ON e.workspace_id=s.workspace_id JOIN email_recipients r ON r.email_id=e.id AND lower(r.address)=lower(s.address) WHERE e.id=$1)")
+        .bind(email_id).fetch_one(pool).await?;
+    if suppressed {
+        return Ok(Outcome::Failed(
+            "Recipient became suppressed before delivery".into(),
+        ));
+    }
+    if email.environment == "test" {
+        return simulate(pool, &email).await;
+    }
+    let provider_id = match send_ses(ses, &email, configuration_set).await {
+        Ok(value) => value,
+        Err(ProviderFailure::Retryable(reason)) => return Ok(Outcome::Retry(reason)),
+        Err(ProviderFailure::Permanent(reason)) => return Ok(Outcome::Failed(reason)),
+        Err(ProviderFailure::Ambiguous(reason)) => {
+            return Ok(Outcome::Failed(format!(
+                "Ambiguous provider result; manual review required: {reason}"
+            )))
         }
     };
-    let updated = match sqlx::query("UPDATE emails SET status = 'sent', provider_message_id = $2, sent_at = now(), processing_started_at = NULL WHERE id = $1 AND status = 'processing'").bind(email.id).bind(&provider_id).execute(pool).await {
+    let mut tx =
+        match pool.begin().await {
+            Ok(tx) => tx,
+            Err(e) => return Ok(Outcome::Failed(format!(
+                "Provider accepted message; state transaction failed; manual review required: {e}"
+            ))),
+        };
+    let updated = match sqlx::query("UPDATE emails SET status = 'sent', provider_message_id = $2, sent_at = now(), processing_started_at = NULL WHERE id = $1 AND status = 'processing'").bind(email.id).bind(&provider_id).execute(&mut *tx).await {
         Ok(value) => value,
         Err(error) => return Ok(Outcome::Failed(format!("provider accepted message but state recording failed; manual review required: {error}"))),
     };
@@ -296,13 +324,21 @@ async fn process(
             "email state changed during provider send".into(),
         ));
     }
-    if let Err(error) =
-        sqlx::query("UPDATE email_recipients SET status = 'sent' WHERE email_id = $1")
-            .bind(email.id)
-            .execute(pool)
-            .await
+    if let Err(error) = sqlx::query(
+        "UPDATE email_recipients SET status = 'sent' WHERE email_id = $1 AND status = 'pending'",
+    )
+    .bind(email.id)
+    .execute(&mut *tx)
+    .await
     {
-        tracing::error!(email_id = %email.id, error = %error, "recipient status update failed after provider acceptance");
+        return Ok(Outcome::Failed(format!(
+            "Provider accepted message; recipient state failed; manual review required: {error}"
+        )));
+    }
+    if let Err(error) = tx.commit().await {
+        return Ok(Outcome::Failed(format!(
+            "Provider accepted message; commit uncertain; manual review required: {error}"
+        )));
     }
     Ok(Outcome::Sent(provider_id))
 }
@@ -310,9 +346,10 @@ async fn process(
 async fn send_ses(
     client: &aws_sdk_sesv2::Client,
     email: &Email,
+    configuration_set: Option<&str>,
 ) -> Result<String, ProviderFailure> {
     if !email.attachments.is_empty() {
-        return send_raw_ses(client, email).await;
+        return send_raw_ses(client, email, configuration_set).await;
     }
     let content = |value: String| Content::builder().data(value).charset("UTF-8").build();
     let body = Body::builder()
@@ -347,6 +384,7 @@ async fn send_ses(
         .build();
     let mut request = client
         .send_email()
+        .set_configuration_set_name(configuration_set.map(str::to_owned))
         .from_email_address(&email.sender)
         .destination(destination)
         .content(EmailContent::builder().simple(message).build());
@@ -362,6 +400,7 @@ async fn send_ses(
 async fn send_raw_ses(
     client: &aws_sdk_sesv2::Client,
     email: &Email,
+    configuration_set: Option<&str>,
 ) -> Result<String, ProviderFailure> {
     let mut builder = MessageBuilder::new().from(email.sender.as_str()).to(email
         .to
@@ -413,6 +452,7 @@ async fn send_raw_ses(
         .build();
     let response = client
         .send_email()
+        .set_configuration_set_name(configuration_set.map(str::to_owned))
         .destination(destination)
         .content(EmailContent::builder().raw(raw_message).build())
         .send()
@@ -423,11 +463,13 @@ async fn send_raw_ses(
     })
 }
 
-async fn reset_for_retry(pool: &db::DbPool, id: Uuid, reason: &str) {
-    let _ = sqlx::query("UPDATE emails SET status = 'queued', processing_started_at = NULL, last_error = $2 WHERE id = $1 AND status = 'processing'").bind(id).bind(reason).execute(pool).await;
+async fn reset_for_retry(pool: &db::DbPool, id: Uuid, reason: &str) -> Result<()> {
+    sqlx::query("UPDATE emails SET status = 'queued', processing_started_at = NULL, last_error = $2 WHERE id = $1 AND status = 'processing'").bind(id).bind(reason).execute(pool).await?;
+    Ok(())
 }
-async fn fail_email(pool: &db::DbPool, id: Uuid, reason: &str) {
-    let _ = sqlx::query("UPDATE emails SET status = 'failed', processing_started_at = NULL, completed_at = now(), last_error = $2 WHERE id = $1 AND status IN ('queued', 'processing')").bind(id).bind(reason).execute(pool).await;
+async fn fail_email(pool: &db::DbPool, id: Uuid, reason: &str) -> Result<()> {
+    sqlx::query("UPDATE emails SET status = 'failed', processing_started_at = NULL, completed_at = now(), last_error = $2 WHERE id = $1 AND status IN ('queued', 'processing')").bind(id).bind(reason).execute(pool).await?;
+    Ok(())
 }
 async fn record_dead_letter(
     pool: &db::DbPool,
@@ -435,17 +477,17 @@ async fn record_dead_letter(
     email_id: Option<Uuid>,
     payload: &[u8],
     reason: String,
-) {
+) -> Result<()> {
     let envelope =
         serde_json::json!({"reason": reason, "payload": String::from_utf8_lossy(payload)});
-    let _ = sqlx::query(
+    sqlx::query(
         "INSERT INTO delivery_dead_letters (email_id, reason, payload) VALUES ($1, $2, $3)",
     )
     .bind(email_id)
     .bind(envelope["reason"].as_str().unwrap_or("unknown failure"))
     .bind(envelope.clone())
     .execute(pool)
-    .await;
+    .await?;
     match context
         .publish(
             "mailer.dlq.email",
@@ -458,26 +500,38 @@ async fn record_dead_letter(
         }
         Err(error) => tracing::error!(error = %error, "dead-letter publish failed"),
     }
+    Ok(())
 }
 
-fn classify_provider_error(
+pub(crate) fn classify_provider_error(
     error: aws_sdk_sesv2::error::SdkError<aws_sdk_sesv2::operation::send_email::SendEmailError>,
 ) -> ProviderFailure {
-    let message = error.to_string();
-    let normalized = message.to_ascii_lowercase();
-    if normalized.contains("throttl")
-        || normalized.contains("too many request")
-        || normalized.contains("service unavailable")
-    {
-        ProviderFailure::Retryable(message)
-    } else if normalized.contains("dispatch failure")
-        || normalized.contains("timeout")
-        || normalized.contains("connection")
-        || normalized.contains("response error")
-    {
-        ProviderFailure::Ambiguous(message)
-    } else {
-        ProviderFailure::Permanent(message)
+    use aws_sdk_sesv2::error::{ProvideErrorMetadata, SdkError};
+    match error {
+        SdkError::ServiceError(context) => {
+            let code = context
+                .err()
+                .code()
+                .unwrap_or("UnknownServiceError")
+                .to_owned();
+            if matches!(
+                code.as_str(),
+                "TooManyRequestsException"
+                    | "Throttling"
+                    | "ThrottlingException"
+                    | "LimitExceededException"
+            ) {
+                ProviderFailure::Retryable(code)
+            } else if context.raw().status().as_u16() >= 500 {
+                ProviderFailure::Ambiguous(code)
+            } else {
+                ProviderFailure::Permanent(code)
+            }
+        }
+        SdkError::ConstructionFailure(_) => {
+            ProviderFailure::Permanent("Invalid provider request".into())
+        }
+        _ => ProviderFailure::Ambiguous("Provider transport result is uncertain".into()),
     }
 }
 fn retry_delay(delivered: i64) -> u64 {
@@ -487,4 +541,45 @@ fn retry_delay(delivered: i64) -> u64 {
         3 => 120,
         _ => 600,
     }
+}
+
+async fn simulate(pool: &db::DbPool, email: &Email) -> Result<Outcome> {
+    use serde_json::json;
+    let mut tx = pool.begin().await?;
+    let row = sqlx::query("SELECT workspace_id,metadata FROM emails WHERE id=$1 FOR UPDATE")
+        .bind(email.id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let workspace: Uuid = row.get("workspace_id");
+    let metadata: serde_json::Value = row.get("metadata");
+    let provider_id = format!("test_{}", email.id);
+    let mut aggregate = "delivered";
+    for address in email.to.iter().chain(&email.cc).chain(&email.bcc) {
+        let (kind, status) = if address == "complaint@simulator.mailer.invalid" {
+            ("complaint", "complained")
+        } else if address == "bounce@simulator.mailer.invalid" {
+            ("bounce", "bounced")
+        } else {
+            ("delivery", "delivered")
+        };
+        if status == "complained" || (status == "bounced" && aggregate != "complained") {
+            aggregate = status;
+        }
+        let event_id = Uuid::new_v4();
+        let payload = json!({"emailId":email.id,"environment":"test","metadata":metadata,"eventId":format!("test_{event_id}"),"messageId":provider_id,"eventType":kind,"occurredAt":chrono::Utc::now(),"recipients":[address],"bounceType":if kind=="bounce" {Some("Permanent")} else {None},"details":{"simulated":true}});
+        sqlx::query("UPDATE email_recipients SET status=$2 WHERE email_id=$1 AND address=$3")
+            .bind(email.id)
+            .bind(status)
+            .bind(address)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO delivery_events(id,email_id,provider_event_id,event_type,recipient,payload,occurred_at) VALUES($1,$2,$3,$4,$5,$6,now())").bind(event_id).bind(email.id).bind(format!("test_{event_id}")).bind(kind).bind(address).bind(payload).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO outbox_events(aggregate_type,aggregate_id,event_type,payload) VALUES('delivery_event',$1,$2,$3)").bind(event_id).bind(format!("email.{kind}")).bind(json!({"emailId":email.id})).execute(&mut *tx).await?;
+        if status != "delivered" {
+            sqlx::query("INSERT INTO suppressions(workspace_id,address,reason,source_email_id) VALUES($1,$2,$3,$4) ON CONFLICT(workspace_id,lower(address)) DO NOTHING").bind(workspace).bind(address).bind(status).bind(email.id).execute(&mut *tx).await?;
+        }
+    }
+    sqlx::query("UPDATE emails SET status=$2,provider_message_id=$3,sent_at=now(),completed_at=now(),processing_started_at=NULL WHERE id=$1").bind(email.id).bind(aggregate).bind(&provider_id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(Outcome::Sent(provider_id))
 }

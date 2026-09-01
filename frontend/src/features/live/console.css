@@ -1,0 +1,37 @@
+.app-shell .brand,.app-shell .nav__item,.text-link,.icon-button { border: 0; background: none; font-family: inherit; cursor: pointer; }
+.app-shell .nav { align-content: start; }
+.app-shell .nav__item { text-align: left; }
+.app-shell .nav__item--active { background: var(--color-surface-blue, #edf3ff); }
+.app-shell button:focus-visible,.live-auth button:focus-visible { outline: 2px solid #3568d4; outline-offset: 3px; }
+.live-panel { margin-bottom: 20px; }
+.live-panel__body { padding: 20px 24px; display: grid; gap: 16px; min-width: 0; }
+.live-panel__body p { line-height: 1.6; }
+.live-error { padding: 12px 16px; background: #fff0ef; color: #a62b25; border: 1px solid #efc7c4; border-radius: 8px; overflow-wrap: anywhere; }
+.live-notice { padding: 12px 16px; background: #effaf4; color: #176b42; border: 1px solid #c0e6ce; border-radius: 8px; }
+.live-actions { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+.live-inline-form { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; }
+.live-inline-form .field { flex: 1; min-width: 220px; }
+.live-checkboxes { display: flex; flex-wrap: wrap; gap: 12px 20px; border: 1px solid #e2e7ee; padding: 16px; border-radius: 8px; }
+.live-checkboxes legend { padding: 0 6px; font-weight: 600; }
+.live-checkboxes label { display: flex; gap: 8px; align-items: center; }
+.live-checkboxes input { width: auto; }
+.live-record { padding: 14px 0; border-bottom: 1px solid #e2e7ee; overflow-wrap: anywhere; }
+.live-id { display: block; font-size: 11px; margin-top: 6px; color: #63738b; }
+.live-badge { display: inline-block; border-radius: 5px; padding: 4px 8px; color: #43536b; background: #edf1f7; font-size: 12px; white-space: nowrap; }
+.live-badge--delivered,.live-badge--verified,.live-badge--succeeded { color: #176b42; background: #e7f6ed; }
+.live-badge--failed,.live-badge--bounced,.live-badge--complained { color: #a62b25; background: #ffedeb; }
+.live-auth { width: min(560px,100%); margin: 7vh auto; padding: 24px; }
+.live-auth__brand { text-align: center; display: grid; justify-items: center; gap: 12px; margin-bottom: 28px; }
+.live-auth__brand strong { font-size: 22px; }
+.live-send { max-height: 90vh; overflow-y: auto; }
+.live-environment { display: flex; align-items: center; gap: 12px; font-size: 12px; }
+.live-environment select { width: auto; min-width: 120px; padding: 8px 12px; border: 1px solid #dce3ee; border-radius: 7px; background: white; font: inherit; }
+.live-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); }
+.live-metrics .metric-card__value { font-size: 30px; }
+.live-steps { list-style: decimal; padding-left: 24px; line-height: 1.9; }
+.live-panel pre { padding: 16px; background: #f6f8fb; border: 1px solid #e2e7ee; border-radius: 8px; max-height: 380px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.65; }
+.live-panel td { max-width: 360px; overflow-wrap: anywhere; }
+.live-panel code { white-space: normal; overflow-wrap: anywhere; }
+.live-panel textarea,.live-auth input,.live-send input,.live-send textarea { width: 100%; }
+button:disabled { opacity: .55; cursor: not-allowed; }
+@media(max-width:640px) { .live-metrics { grid-template-columns: 1fr; } .live-panel__body { padding: 16px; } .live-environment { font-size: 0; } .live-environment select { font-size: 13px; } }

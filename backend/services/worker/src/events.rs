@@ -41,53 +41,19 @@ struct SnsEnvelope {
 
 #[derive(Deserialize)]
 struct SesNotification {
-    #[serde(rename = "eventType")]
+    #[serde(rename = "eventType", alias = "notificationType")]
     event_type: String,
     mail: SesMail,
-    delivery: Option<SesDelivery>,
-    bounce: Option<SesBounce>,
-    complaint: Option<SesComplaint>,
-    reject: Option<SesReject>,
-    #[serde(rename = "failure")]
-    failure: Option<SesFailure>,
+    #[serde(flatten)]
+    data: serde_json::Map<String, serde_json::Value>,
 }
 #[derive(Deserialize)]
 struct SesMail {
     #[serde(rename = "messageId")]
     message_id: String,
     timestamp: chrono::DateTime<chrono::Utc>,
-}
-#[derive(Deserialize)]
-struct SesDelivery {
-    timestamp: chrono::DateTime<chrono::Utc>,
-    recipients: Vec<String>,
-}
-#[derive(Deserialize)]
-struct SesBounce {
-    timestamp: chrono::DateTime<chrono::Utc>,
-    bounce_type: String,
-    bounced_recipients: Vec<SesRecipient>,
-}
-#[derive(Deserialize)]
-struct SesComplaint {
-    timestamp: chrono::DateTime<chrono::Utc>,
-    complained_recipients: Vec<SesRecipient>,
-}
-#[derive(Deserialize)]
-struct SesReject {
-    timestamp: chrono::DateTime<chrono::Utc>,
-    reason: Option<String>,
-}
-#[derive(Deserialize)]
-struct SesFailure {
-    timestamp: chrono::DateTime<chrono::Utc>,
-    recipients: Vec<String>,
-    failure_type: Option<String>,
-}
-#[derive(Deserialize)]
-struct SesRecipient {
-    #[serde(rename = "emailAddress")]
-    email_address: String,
+    #[serde(default)]
+    destination: Vec<String>,
 }
 
 pub async fn run(
@@ -168,6 +134,13 @@ where
     verify_sns_signature(cert_client, &envelope, region).await?;
     let notification: SesNotification =
         serde_json::from_str(&envelope.message).context("invalid SES notification")?;
+    // These events are not part of the public contract; acknowledge rather than poison the queue.
+    if matches!(
+        notification.event_type.as_str(),
+        "Send" | "DeliveryDelay" | "Subscription"
+    ) {
+        return Ok(());
+    }
     let event = normalize(notification, envelope.message_id)?;
     let payload = serde_json::to_vec(&event)?;
     let endpoint = format!("{}/internal/v1/ses/events", api_url.trim_end_matches('/'));
@@ -240,83 +213,101 @@ where
 }
 
 fn normalize(notification: SesNotification, event_id: String) -> Result<serde_json::Value> {
-    let (event_type, occurred_at, recipients, bounce_type, details) =
-        match notification.event_type.to_ascii_lowercase().as_str() {
-            "delivery" => {
-                let value = notification.delivery.context("delivery data missing")?;
-                (
-                    "delivery",
-                    value.timestamp,
-                    value.recipients,
-                    None,
-                    serde_json::json!({}),
-                )
-            }
-            "bounce" => {
-                let value = notification.bounce.context("bounce data missing")?;
-                (
-                    "bounce",
-                    value.timestamp,
-                    value
-                        .bounced_recipients
-                        .into_iter()
-                        .map(|recipient| recipient.email_address)
-                        .collect(),
-                    Some(value.bounce_type),
-                    serde_json::json!({}),
-                )
-            }
-            "complaint" => {
-                let value = notification.complaint.context("complaint data missing")?;
-                (
-                    "complaint",
-                    value.timestamp,
-                    value
-                        .complained_recipients
-                        .into_iter()
-                        .map(|recipient| recipient.email_address)
-                        .collect(),
-                    None,
-                    serde_json::json!({}),
-                )
-            }
-            "reject" => {
-                let value = notification.reject.context("reject data missing")?;
-                (
-                    "reject",
-                    value.timestamp,
-                    vec![],
-                    None,
-                    serde_json::json!({"reason": value.reason}),
-                )
-            }
-            "renderingfailure" => {
-                let value = notification.failure.context("failure data missing")?;
-                (
-                    "rendering_failure",
-                    value.timestamp,
-                    value.recipients,
-                    None,
-                    serde_json::json!({"failureType": value.failure_type}),
-                )
-            }
-            "open" => (
-                "open",
-                notification.mail.timestamp,
-                vec![],
-                None,
-                serde_json::json!({}),
-            ),
-            "click" => (
-                "click",
-                notification.mail.timestamp,
-                vec![],
-                None,
-                serde_json::json!({}),
-            ),
-            value => bail!("unsupported SES event type: {value}"),
-        };
+    use serde_json::json;
+    let kind = notification
+        .event_type
+        .to_ascii_lowercase()
+        .replace([' ', '_'], "");
+    let (event_type, key, recipient_key) = match kind.as_str() {
+        "delivery" => ("delivery", "delivery", "recipients"),
+        "bounce" => ("bounce", "bounce", "bouncedRecipients"),
+        "complaint" => ("complaint", "complaint", "complainedRecipients"),
+        "reject" => ("reject", "reject", ""),
+        "renderingfailure" => ("rendering_failure", "failure", ""),
+        "open" => ("open", "open", ""),
+        "click" => ("click", "click", ""),
+        _ => bail!("unsupported SES event type"),
+    };
+    let details = notification
+        .data
+        .get(key)
+        .context("SES event data missing")?;
+    let occurred_at = match details.get("timestamp").and_then(|v| v.as_str()) {
+        Some(value) => value.parse::<chrono::DateTime<chrono::Utc>>()?,
+        None => notification.mail.timestamp,
+    };
+    let recipients: Vec<String> = if recipient_key.is_empty() {
+        notification.mail.destination
+    } else {
+        details
+            .get(recipient_key)
+            .and_then(|v| v.as_array())
+            .context("SES recipients missing")?
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .or_else(|| v.get("emailAddress").and_then(|v| v.as_str()))
+                    .map(str::to_owned)
+                    .context("invalid SES recipient")
+            })
+            .collect::<Result<_>>()?
+    };
     Ok(
-        serde_json::json!({"eventId": event_id, "messageId": notification.mail.message_id, "eventType": event_type, "occurredAt": occurred_at, "recipients": recipients, "bounceType": bounce_type, "details": details}),
+        json!({"eventId":event_id,"messageId":notification.mail.message_id,"eventType":event_type,
+        "occurredAt":occurred_at,"recipients":recipients,"bounceType":details.get("bounceType"),"details":details}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    fn normalize_fixture(kind: &str, key: &str, data: serde_json::Value) -> serde_json::Value {
+        let mut value = json!({"eventType":kind,"mail":{"messageId":"provider-id","timestamp":"2026-08-31T00:00:00Z","destination":["r@example.com"]}});
+        value[key] = data;
+        normalize(serde_json::from_value(value).unwrap(), "event-id".into()).unwrap()
+    }
+    #[test]
+    fn aws_feedback_shapes() {
+        let delivery = normalize_fixture(
+            "Delivery",
+            "delivery",
+            json!({"timestamp":"2026-08-31T00:01:00Z","recipients":["r@example.com"]}),
+        );
+        assert_eq!(delivery["eventType"], "delivery");
+        let bounce = normalize_fixture(
+            "Bounce",
+            "bounce",
+            json!({"timestamp":"2026-08-31T00:01:00Z","bounceType":"Permanent","bouncedRecipients":[{"emailAddress":"r@example.com"}]}),
+        );
+        assert_eq!(bounce["bounceType"], "Permanent");
+        assert_eq!(bounce["recipients"][0], "r@example.com");
+        let complaint = normalize_fixture(
+            "Complaint",
+            "complaint",
+            json!({"timestamp":"2026-08-31T00:01:00Z","complainedRecipients":[{"emailAddress":"r@example.com"}]}),
+        );
+        assert_eq!(complaint["recipients"][0], "r@example.com");
+        assert_eq!(
+            normalize_fixture("Reject", "reject", json!({"reason":"Bad content"}))["eventType"],
+            "reject"
+        );
+        assert_eq!(
+            normalize_fixture(
+                "Rendering Failure",
+                "failure",
+                json!({"errorMessage":"Missing variable","templateName":"Test"})
+            )["eventType"],
+            "rendering_failure"
+        );
+        for kind in ["Open", "Click"] {
+            let value = normalize_fixture(
+                kind,
+                &kind.to_lowercase(),
+                json!({"timestamp":"2026-08-31T00:01:00Z","ipAddress":"192.0.2.1","link":"https://example.com"}),
+            );
+            assert_eq!(value["occurredAt"], "2026-08-31T00:01:00Z");
+            assert_eq!(value["details"]["link"], "https://example.com");
+        }
+    }
 }

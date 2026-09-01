@@ -1,3 +1,5 @@
+use std::time::Duration;
+mod account_mail;
 mod delivery;
 mod events;
 mod lifecycle;
@@ -11,6 +13,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // AWS SDK and HTTPS webhooks enable different rustls providers. Select one
+    // explicitly before building any TLS client, rather than panicking at runtime.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let settings = Settings::from_env()?;
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
@@ -20,14 +25,41 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let db = db::connect(&settings).await?;
     db::ping(&db).await?;
-    let nats = async_nats::connect(&settings.nats_url).await?;
+    // async-nats does not automatically use credentials embedded in the URL.
+    let nats_server: async_nats::ServerAddr = settings
+        .nats_url
+        .parse()
+        .map_err(|_| anyhow::anyhow!("NATS_URL must be a valid NATS server URL"))?;
+    let mut nats_options = async_nats::ConnectOptions::new();
+    if let Some(username) = nats_server.username() {
+        nats_options = nats_options.user_and_password(
+            username.to_owned(),
+            nats_server.password().unwrap_or_default().to_owned(),
+        );
+    }
+    let nats = nats_options.connect(nats_server).await?;
     nats.flush().await?;
     let jetstream = async_nats::jetstream::new(nats);
     let aws = aws_config::defaults(aws_config::BehaviorVersion::latest())
         .region(aws_config::Region::new(settings.aws_region.clone()))
         .load()
         .await;
-    let ses = aws_sdk_sesv2::Client::new(&aws);
+    let ses_config = aws_sdk_sesv2::config::Builder::from(&aws)
+        .retry_config(aws_config::retry::RetryConfig::standard().with_max_attempts(1))
+        .timeout_config(
+            aws_config::timeout::TimeoutConfig::builder()
+                .operation_timeout(Duration::from_secs(30))
+                .build(),
+        )
+        .build();
+    let ses = aws_sdk_sesv2::Client::from_conf(ses_config);
+    let (shutdown, stop) = tokio::sync::watch::channel(false);
+    let mut account_mail = tokio::spawn(account_mail::run(
+        db.clone(),
+        ses.clone(),
+        settings.account_email_from.clone(),
+        stop.clone(),
+    ));
     let object_store = storage::ObjectStore::from_settings(&settings).await?;
     let sqs = aws_sdk_sqs::Client::new(&aws);
     let stale = sqlx::query("UPDATE emails SET status = 'failed', completed_at = now(), processing_started_at = NULL, last_error = 'ambiguous stale provider attempt; manual review required' WHERE status = 'processing' AND processing_started_at < now() - interval '15 minutes'")
@@ -44,12 +76,14 @@ async fn main() -> anyhow::Result<()> {
         region = %settings.aws_region,
         "delivery worker started"
     );
-    let outbox = tokio::spawn(outbox::run(db.clone(), jetstream.clone()));
+    let mut outbox = tokio::spawn(outbox::run(db.clone(), jetstream.clone()));
     let mut delivery = tokio::spawn(delivery::run(
         db.clone(),
         jetstream.clone(),
         ses,
         object_store,
+        settings.ses_configuration_set.clone(),
+        stop.clone(),
     ));
     let lifecycle = tokio::spawn(lifecycle::run(
         db.clone(),
@@ -61,6 +95,7 @@ async fn main() -> anyhow::Result<()> {
         db,
         jetstream,
         settings.webhook_signing_master_key.clone(),
+        stop.clone(),
     ));
     let mut events = settings.ses_events_queue_url.clone().map(|queue_url| {
         tokio::spawn(events::run(
@@ -74,6 +109,8 @@ async fn main() -> anyhow::Result<()> {
     });
     tokio::select! {
         _ = shutdown_signal() => {},
+        result = &mut outbox => { tracing::error!(?result,"outbox stopped"); },
+        result = &mut account_mail => { tracing::error!(?result,"account mail stopped"); },
         result = &mut delivery => {
             match result { Ok(Ok(())) => tracing::warn!("delivery loop stopped"), Ok(Err(error)) => tracing::error!(error = %error, "delivery loop failed"), Err(error) => tracing::error!(error = %error, "delivery task panicked") }
         }
@@ -84,6 +121,21 @@ async fn main() -> anyhow::Result<()> {
             if let Some(result) = result { match result { Ok(Ok(())) => tracing::warn!("SES event transport stopped"), Ok(Err(error)) => tracing::error!(error = %error, "SES event transport failed"), Err(error) => tracing::error!(error = %error, "SES event transport panicked") } }
         }
     }
+    let _ = shutdown.send(true);
+    // Stop fetching, but allow bounded in-flight provider requests to finish recording state.
+    let _ = tokio::time::timeout(Duration::from_secs(40), async {
+        if !delivery.is_finished() {
+            let _ = (&mut delivery).await;
+        }
+        if !webhook.is_finished() {
+            let _ = (&mut webhook).await;
+        }
+        if !account_mail.is_finished() {
+            let _ = (&mut account_mail).await;
+        }
+    })
+    .await;
+    account_mail.abort();
     outbox.abort();
     delivery.abort();
     webhook.abort();

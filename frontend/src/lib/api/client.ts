@@ -19,6 +19,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   const contentType = response.headers.get('content-type') ?? ''
   const payload = contentType.includes('application/json') ? await response.json() : await response.text()
   if (!response.ok) {
+    if (response.status === 401 && !path.startsWith('/v1/auth/')) window.dispatchEvent(new Event('mailer:session-expired'))
     const body: ApiErrorBody = typeof payload === 'string' ? { code: 'request_failed', message: payload || response.statusText } : payload
     throw new ApiError(response.status, body)
   }

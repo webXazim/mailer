@@ -1,4 +1,4 @@
-use super::{api_keys::workspace_id, AppState};
+use super::AppState;
 use ::auth::{hash_token, webhook_secret};
 use axum::{
     extract::{Path, State},
@@ -10,7 +10,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::Row;
-use std::net::IpAddr;
 use url::Url;
 use uuid::Uuid;
 
@@ -27,6 +26,7 @@ const ALLOWED_EVENTS: &[&str] = &[
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateEndpoint {
+    environment: String,
     url: String,
     subscriptions: Vec<String>,
 }
@@ -42,6 +42,7 @@ struct UpdateEndpoint {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EndpointView {
+    environment: String,
     id: Uuid,
     url: String,
     subscriptions: serde_json::Value,
@@ -86,14 +87,22 @@ async fn create(
         Ok(value) => value,
         Err(response) => return *response,
     };
+    if !matches!(input.environment.as_str(), "test" | "production") {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_environment",
+            "Choose test or production",
+        );
+    }
     let endpoint_id = Uuid::new_v4();
     let secret = webhook_secret(&state.webhook_signing_master_key, endpoint_id, 1);
-    let row = match sqlx::query("INSERT INTO webhook_endpoints (id, workspace_id, url, signing_secret_hash, subscriptions) VALUES ($1, $2, $3, $4, $5) RETURNING created_at, updated_at")
+    let row = match sqlx::query("INSERT INTO webhook_endpoints (id, workspace_id, url, signing_secret_hash, subscriptions, environment) VALUES ($1, $2, $3, $4, $5, $6) RETURNING created_at, updated_at")
         .bind(endpoint_id)
         .bind(workspace_id)
         .bind(url.as_str())
         .bind(hash_token(&secret))
         .bind(json!(subscriptions))
+        .bind(&input.environment)
         .fetch_one(&state.db)
         .await
     {
@@ -103,7 +112,7 @@ async fn create(
             return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to create webhook endpoint");
         }
     };
-    Json(json!({"data": {"endpoint": {"id": endpoint_id, "url": url.as_str(), "subscriptions": subscriptions, "enabled": true, "failureCount": 0, "createdAt": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at"), "updatedAt": row.get::<chrono::DateTime<chrono::Utc>, _>("updated_at")}, "secret": secret}})).into_response()
+    Json(json!({"data": {"endpoint": {"environment": input.environment, "id": endpoint_id, "url": url.as_str(), "subscriptions": subscriptions, "enabled": true, "failureCount": 0, "createdAt": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at"), "updatedAt": row.get::<chrono::DateTime<chrono::Utc>, _>("updated_at")}, "secret": secret}})).into_response()
 }
 
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -111,7 +120,7 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Response {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let rows = match sqlx::query("SELECT id, url, subscriptions, enabled, failure_count, last_success_at, last_failure_at, created_at, updated_at FROM webhook_endpoints WHERE workspace_id = $1 ORDER BY created_at DESC")
+    let rows = match sqlx::query("SELECT environment, id, url, subscriptions, enabled, failure_count, last_success_at, last_failure_at, created_at, updated_at FROM webhook_endpoints WHERE workspace_id = $1 ORDER BY created_at DESC")
         .bind(workspace_id)
         .fetch_all(&state.db)
         .await
@@ -157,7 +166,7 @@ async fn update(
         },
         None => None,
     };
-    let row = match sqlx::query("UPDATE webhook_endpoints SET url = COALESCE($3, url), subscriptions = COALESCE($4, subscriptions), enabled = COALESCE($5, enabled), failure_count = CASE WHEN $5 = true THEN 0 ELSE failure_count END, updated_at = now() WHERE id = $1 AND workspace_id = $2 RETURNING id, url, subscriptions, enabled, failure_count, last_success_at, last_failure_at, created_at, updated_at")
+    let row = match sqlx::query("UPDATE webhook_endpoints SET url = COALESCE($3, url), subscriptions = COALESCE($4, subscriptions), enabled = COALESCE($5, enabled), failure_count = CASE WHEN $5 = true THEN 0 ELSE failure_count END, updated_at = now() WHERE id = $1 AND workspace_id = $2 RETURNING environment, id, url, subscriptions, enabled, failure_count, last_success_at, last_failure_at, created_at, updated_at")
         .bind(id)
         .bind(workspace_id)
         .bind(url)
@@ -394,6 +403,7 @@ async fn list_attempts(
 
 fn endpoint_view(row: sqlx::postgres::PgRow) -> EndpointView {
     EndpointView {
+        environment: row.get("environment"),
         id: row.get("id"),
         url: row.get("url"),
         subscriptions: row.get("subscriptions"),
@@ -424,72 +434,19 @@ fn validate_subscriptions(mut values: Vec<String>) -> Result<Vec<String>, Box<Re
 }
 
 fn validate_url(value: &str) -> Result<Url, Box<Response>> {
-    if value.len() > 2_048 {
-        return Err(Box::new(error(
-            StatusCode::BAD_REQUEST,
-            "invalid_webhook_url",
-            "Webhook URL is too long",
-        )));
-    }
-    let url = Url::parse(value.trim()).map_err(|_| {
+    ::auth::public_webhook_url(value.trim()).map_err(|_| {
         Box::new(error(
             StatusCode::BAD_REQUEST,
-            "invalid_webhook_url",
-            "Enter a valid webhook URL",
+            "unsafe_webhook_url",
+            "Use HTTPS with a public DNS hostname; IP addresses are not allowed",
         ))
-    })?;
-    if url.scheme() != "https"
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(Box::new(error(
-            StatusCode::BAD_REQUEST,
-            "invalid_webhook_url",
-            "Webhook URL must use HTTPS without credentials or fragments",
-        )));
-    }
-    if url
-        .host_str()
-        .is_some_and(|host| host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost"))
-    {
-        return Err(Box::new(error(
-            StatusCode::BAD_REQUEST,
-            "unsafe_webhook_url",
-            "Local webhook URLs are not allowed",
-        )));
-    }
-    if url
-        .host_str()
-        .and_then(|host| host.parse::<IpAddr>().ok())
-        .is_some_and(is_private_ip)
-    {
-        return Err(Box::new(error(
-            StatusCode::BAD_REQUEST,
-            "unsafe_webhook_url",
-            "Private network webhook URLs are not allowed",
-        )));
-    }
-    Ok(url)
+    })
 }
 
-fn is_private_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(value) => {
-            value.is_private()
-                || value.is_loopback()
-                || value.is_link_local()
-                || value.is_unspecified()
-                || value.is_broadcast()
-        }
-        IpAddr::V6(value) => {
-            value.is_loopback()
-                || value.is_unspecified()
-                || value.is_unique_local()
-                || value.is_unicast_link_local()
-        }
-    }
+async fn workspace_id(state: &AppState, headers: &HeaderMap) -> Result<Uuid, Response> {
+    super::api_keys::access(state, headers, "webhooks:manage", true)
+        .await
+        .map(|v| v.0)
 }
 
 fn error(status: StatusCode, code: &str, message: &str) -> Response {

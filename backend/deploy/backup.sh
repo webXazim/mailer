@@ -1,5 +1,6 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+# A failed pg_dump must fail the pipeline, even if age encrypts an empty stream.
+set -euo pipefail
 
 umask 077
 : "${BACKUP_DIR:?BACKUP_DIR is required}"
@@ -20,7 +21,7 @@ temporary="$archive.partial"
 cleanup() { rm -f "$temporary"; }
 trap cleanup EXIT INT TERM
 
-docker compose --env-file .env -f docker-compose.yml -f docker-compose.production.yml \
+docker compose --env-file .env --project-name crescentsphere-mailer -f docker-compose.production.yml \
     exec -T postgres pg_dump --format=custom --no-owner --no-acl \
     --username "$POSTGRES_USER" "$POSTGRES_DB" \
     | age --recipient "$BACKUP_AGE_RECIPIENT" --output "$temporary"

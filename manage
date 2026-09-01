@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 
 usage() {
     cat <<'EOF'
-Usage: ./manage COMMAND
+Usage: sh manage COMMAND
 
 Commands:
   install             Install frontend dependencies
@@ -19,10 +19,15 @@ Commands:
   backend-test        Run Rust tests
   check               Verify frontend and backend
   compose-config      Validate local Compose configuration
+  production-init     Create .env with generated local secrets (never overwrite)
+  deploy              Validate, build on the VPS, and start production services
   preflight           Validate production configuration
-  production-pull     Pull immutable production images
-  production-up       Start production services
+  production-pull     Pull infrastructure images (not the locally built app)
+  production-up       Alias for deploy
   production-down     Stop production services
+  production-logs     Follow production logs
+  production-status   Show production services and assigned localhost port
+  healthcheck         Check the public console, API, and private-route blocking
   backup              Run an encrypted PostgreSQL backup
   restore-rehearsal   Restore the latest backup into a disposable database
 EOF
@@ -33,6 +38,13 @@ load_environment() {
     set -a
     . ./.env
     set +a
+}
+
+production_compose() {
+    # Use the same file values preflight validates, even if the login shell has
+    # exported similarly named variables for another application on this VPS.
+    load_environment
+    docker compose --project-name crescentsphere-mailer --env-file .env -f docker-compose.production.yml "$@"
 }
 
 command=${1:-help}
@@ -48,29 +60,60 @@ case "$command" in
     backend-lint) cargo clippy --manifest-path backend/Cargo.toml --workspace --all-targets -- -D warnings ;;
     backend-test) cargo test --manifest-path backend/Cargo.toml --workspace ;;
     check)
-        "$0" frontend-build
-        "$0" backend-fmt
-        "$0" backend-lint
-        "$0" backend-test
+        sh "$0" frontend-build
+        sh "$0" backend-fmt
+        sh "$0" backend-lint
+        sh "$0" backend-test
         ;;
     compose-config) docker compose config --quiet ;;
-    preflight) backend/deploy/preflight.sh ;;
+    production-init) sh backend/deploy/init-env.sh ;;
+    preflight) sh backend/deploy/preflight.sh ;;
     production-pull)
-        docker compose --env-file .env -f docker-compose.yml -f docker-compose.production.yml pull
+        production_compose pull postgres nats cloudflared
         ;;
-    production-up)
-        docker compose --env-file .env -f docker-compose.yml -f docker-compose.production.yml up -d --no-build
+    deploy|production-up)
+        sh backend/deploy/preflight.sh
+        # Build before replacing running containers. Limit concurrent build work.
+        COMPOSE_PARALLEL_LIMIT=1 production_compose build api worker frontend
+        production_compose up -d --no-build --wait --wait-timeout 180
+        # cloudflared's minimal image has no shell/curl; probe from nginx.
+        if ! production_compose exec -T frontend sh -c '
+            attempt=0
+            until wget -qO /dev/null http://cloudflared:2000/ready; do
+                attempt=$((attempt + 1))
+                [ "$attempt" -lt 15 ] || exit 1
+                sleep 2
+            done'; then
+            echo 'Services started, but the tunnel is not ready. Check: sh manage production-logs cloudflared' >&2
+            exit 1
+        fi
+        production_compose ps
+        printf '\nLocal console address: '
+        production_compose port api 8081
+        echo 'Tunnel connected. Verify the public route with: sh manage healthcheck'
         ;;
     production-down)
-        docker compose --env-file .env -f docker-compose.yml -f docker-compose.production.yml down
+        production_compose down
+        ;;
+    production-logs)
+        shift
+        production_compose logs --follow --tail 100 "$@"
+        ;;
+    production-status)
+        production_compose ps
+        production_compose port api 8081
+        ;;
+    healthcheck)
+        load_environment
+        sh backend/deploy/healthcheck.sh
         ;;
     backup)
         load_environment
-        backend/deploy/backup.sh
+        bash backend/deploy/backup.sh
         ;;
     restore-rehearsal)
         load_environment
-        backend/deploy/restore-rehearsal.sh
+        sh backend/deploy/restore-rehearsal.sh
         ;;
     *) echo "Unknown command: $command" >&2; usage >&2; exit 2 ;;
 esac

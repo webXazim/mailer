@@ -12,55 +12,61 @@ help:
 	  'make check             Verify frontend and backend' \
 	  'make compose-config    Validate local Compose configuration' \
 	  'make preflight         Validate production configuration' \
-	  'make production-up     Start immutable production images'
+	  'make production-init   Create .env with generated local secrets' \
+	  'make deploy            Build and deploy on the VPS' \
+	  'make production-up     Build and start VPS services'
 
 install:
-	./manage install
+	sh ./manage install
 
 dev:
-	./manage dev
+	sh ./manage dev
 
 down:
-	./manage down
+	sh ./manage down
 
 logs:
-	./manage logs
+	sh ./manage logs
 
 frontend-dev:
-	./manage frontend-dev
+	sh ./manage frontend-dev
 
 frontend-build:
-	./manage frontend-build
+	sh ./manage frontend-build
 
 backend-fmt:
-	./manage backend-fmt
+	sh ./manage backend-fmt
 
 backend-lint:
-	./manage backend-lint
+	sh ./manage backend-lint
 
 backend-test:
-	./manage backend-test
+	sh ./manage backend-test
 
 check:
-	./manage check
+	sh ./manage check
 
 compose-config:
-	./manage compose-config
+	sh ./manage compose-config
 
 production-pull:
-	./manage production-pull
+	sh ./manage production-pull
 
 production-up:
-	./manage production-up
+	sh ./manage production-up
 
 production-down:
-	./manage production-down
+	sh ./manage production-down
 
 preflight:
-	./manage preflight
+	sh ./manage preflight
 
 backup:
-	./manage backup
+	sh ./manage backup
 
 restore-rehearsal:
-	./manage restore-rehearsal
+	sh ./manage restore-rehearsal
+
+.PHONY: deploy production-init production-logs production-status healthcheck
+deploy production-init production-logs production-status healthcheck:
+	sh ./manage $@

@@ -15,7 +15,7 @@ use sqlx::Row;
 use std::net::{IpAddr, SocketAddr};
 use uuid::Uuid;
 
-const MAX_RECIPIENTS: usize = 100;
+const MAX_RECIPIENTS: usize = 50;
 const MAX_SUBJECT_BYTES: usize = 998;
 const MAX_BODY_BYTES: usize = 1_000_000;
 const MAX_ATTACHMENTS: usize = 10;
@@ -56,26 +56,31 @@ async fn send_email(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    Json(input): Json<SendEmailRequest>,
+    Json(mut input): Json<SendEmailRequest>,
 ) -> Response {
-    let Some(raw_key) = bearer_token(&headers) else {
-        return error(
-            StatusCode::UNAUTHORIZED,
-            "invalid_api_key",
-            "A valid API key is required",
-        );
-    };
-    let (api_key_id, workspace_id, key_environment) =
+    let (api_key_id, workspace_id, key_environment) = if headers.contains_key(header::AUTHORIZATION)
+    {
+        let raw_key = bearer_token(&headers).unwrap_or_default();
         match api_keys::verify(&raw_key, &state.db, "emails:send").await {
-            Ok(value) => value,
+            Ok((id, workspace, environment)) => (Some(id), workspace, environment),
             Err(_) => {
                 return error(
                     StatusCode::UNAUTHORIZED,
                     "invalid_api_key",
-                    "A valid API key is required",
+                    "Valid sending key required",
                 )
             }
-        };
+        }
+    } else {
+        match api_keys::access(&state, &headers, "emails:send", true).await {
+            Ok((workspace, _)) => (
+                None,
+                workspace,
+                input.environment.clone().unwrap_or_else(|| "test".into()),
+            ),
+            Err(response) => return response,
+        }
+    };
     let environment = input
         .environment
         .clone()
@@ -193,10 +198,30 @@ async fn send_email(
         return error(
             StatusCode::BAD_REQUEST,
             "invalid_recipients",
-            "Provide between 1 and 100 recipients",
+            "Provide between 1 and 50 recipients",
         );
     }
-    let request_hash = request_hash(&input);
+    // Canonicalize omitted/explicit environment before hashing.
+    input.environment = Some(environment.clone());
+    if input
+        .headers
+        .as_ref()
+        .is_some_and(|v| v.as_object().is_some_and(|o| !o.is_empty()))
+        || input
+            .tags
+            .as_ref()
+            .is_some_and(|v| v.as_array().is_some_and(|a| !a.is_empty()))
+    {
+        return error(StatusCode::BAD_REQUEST, "unsupported_fields", "Custom headers and tags are not supported in this release; use metadata for correlation");
+    }
+    if state.object_store.is_none() && !attachments.is_empty() {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage_required",
+            "Attachments require configured object storage",
+        );
+    }
+    let request_hash = request_hash_legacy(&input);
     let email_id = Uuid::new_v4();
     let object_key = format!("workspaces/{workspace_id}/emails/{email_id}/content.json");
     let mut tx = match state.db.begin().await {
@@ -245,20 +270,22 @@ async fn send_email(
             "Client request rate exceeded",
         );
     }
-    let rate = match sqlx::query_scalar::<_, i32>("INSERT INTO api_key_rate_limits (api_key_id, bucket_start, request_count) VALUES ($1, $2, 1) ON CONFLICT (api_key_id, bucket_start) DO UPDATE SET request_count = api_key_rate_limits.request_count + 1 RETURNING request_count")
+    if let Some(api_key_id) = api_key_id {
+        let rate = match sqlx::query_scalar::<_, i32>("INSERT INTO api_key_rate_limits (api_key_id, bucket_start, request_count) VALUES ($1, $2, 1) ON CONFLICT (api_key_id, bucket_start) DO UPDATE SET request_count = api_key_rate_limits.request_count + 1 RETURNING request_count")
         .bind(api_key_id).bind(bucket).fetch_one(&mut *tx).await {
         Ok(value) => value,
         Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to enforce request limit"),
     };
-    if i64::from(rate) > key_rate_limit {
-        return error(
-            StatusCode::TOO_MANY_REQUESTS,
-            "rate_limited",
-            "API key request rate exceeded",
-        );
+        if i64::from(rate) > key_rate_limit {
+            return error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                "API key request rate exceeded",
+            );
+        }
     }
     if sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-        .bind(format!("{workspace_id}:{idempotency_key}"))
+        .bind(format!("{workspace_id}:{environment}:{idempotency_key}"))
         .execute(&mut *tx)
         .await
         .is_err()
@@ -269,16 +296,21 @@ async fn send_email(
             "Unable to reserve idempotency key",
         );
     }
-    match sqlx::query("SELECT request_hash, response FROM idempotency_keys WHERE workspace_id = $1 AND key = $2 FOR UPDATE").bind(workspace_id).bind(idempotency_key).fetch_optional(&mut *tx).await {
+    match sqlx::query("SELECT request_hash, response FROM idempotency_keys WHERE workspace_id = $1 AND key = $2 AND environment = $3 FOR UPDATE").bind(workspace_id).bind(idempotency_key).bind(&environment).fetch_optional(&mut *tx).await {
         Ok(Some(row)) => {
             let previous_hash: Vec<u8> = row.get("request_hash");
-            if previous_hash != request_hash { return error(StatusCode::CONFLICT, "idempotency_conflict", "This idempotency key was used with a different request"); }
+            let legacy_hash = { let saved = input.environment.take(); let hash = request_hash_legacy(&input); input.environment = saved; hash };
+            if previous_hash != request_hash && previous_hash != legacy_hash { return error(StatusCode::CONFLICT, "idempotency_conflict", "This idempotency key was used with a different request"); }
             if let Some(response) = row.get::<Option<serde_json::Value>, _>("response") { return (StatusCode::OK, Json(response)).into_response(); }
         },
         Ok(None) => {},
         Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to check idempotency key"),
     }
-    let domain_id = match sqlx::query_scalar::<_, Uuid>("SELECT id FROM domains WHERE workspace_id = $1 AND lower(name) = $2 AND status = 'verified'").bind(workspace_id).bind(&from_domain).fetch_optional(&mut *tx).await { Ok(Some(value)) => value, Ok(None) => return error(StatusCode::BAD_REQUEST, "sender_domain_unverified", "The sender domain is not verified for this workspace"), Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to validate sender domain") };
+    let domain_id = if environment == "test" && from_domain == "sandbox.mailer.invalid" {
+        None
+    } else {
+        Some(match sqlx::query_scalar::<_, Uuid>("SELECT id FROM domains WHERE workspace_id = $1 AND lower(name) = $2 AND status = 'verified'").bind(workspace_id).bind(&from_domain).fetch_optional(&mut *tx).await { Ok(Some(value)) => value, Ok(None) => return error(StatusCode::BAD_REQUEST, "sender_domain_unverified", "The sender domain is not verified for this workspace"), Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to validate sender domain") })
+    };
     let suppressed = match sqlx::query_scalar::<_, String>(
         "SELECT address FROM suppressions WHERE workspace_id = $1 AND lower(address) = ANY($2)",
     )
@@ -367,9 +399,9 @@ async fn send_email(
         }
     }
     let response = json!({"data": {"id": email_id, "status": "queued"}});
-    if sqlx::query("INSERT INTO idempotency_keys (workspace_id, key, request_hash, response) VALUES ($1, $2, $3, $4)").bind(workspace_id).bind(idempotency_key).bind(request_hash).bind(response.clone()).execute(&mut *tx).await.is_err() { return error(StatusCode::CONFLICT, "idempotency_conflict", "This idempotency key is already in use"); }
+    if sqlx::query("INSERT INTO idempotency_keys (workspace_id, key, request_hash, response, environment) VALUES ($1, $2, $3, $4, $5)").bind(workspace_id).bind(idempotency_key).bind(request_hash).bind(response.clone()).bind(&environment).execute(&mut *tx).await.is_err() { return error(StatusCode::CONFLICT, "idempotency_conflict", "This idempotency key is already in use"); }
     if sqlx::query("INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload) VALUES ('email', $1, 'email.accepted', $2)").bind(email_id).bind(json!({"emailId": email_id, "workspaceId": workspace_id})).execute(&mut *tx).await.is_err() { return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to queue email"); }
-    let stored_object = if let Some(store) = &state.object_store {
+    if let Some(store) = &state.object_store {
         let content = serde_json::to_vec(
             &json!({"text": input.text, "html": input.html, "attachments": attachments}),
         )
@@ -390,14 +422,9 @@ async fn send_email(
             let _ = store.delete(&object_key).await;
             return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to record email storage");
         }
-        Some(store)
-    } else {
-        None
-    };
+    }
     if tx.commit().await.is_err() {
-        if let Some(store) = stored_object {
-            let _ = store.delete(&object_key).await;
-        }
+        // Commit may have succeeded despite a lost reply. Never delete its content here.
         return error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal_error",
@@ -407,7 +434,7 @@ async fn send_email(
     (StatusCode::ACCEPTED, Json(response)).into_response()
 }
 
-fn request_hash(input: &SendEmailRequest) -> Vec<u8> {
+fn request_hash_legacy(input: &SendEmailRequest) -> Vec<u8> {
     let encoded = serde_json::to_vec(input).unwrap_or_default();
     Sha256::digest(encoded).to_vec()
 }

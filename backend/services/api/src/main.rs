@@ -1,8 +1,10 @@
+mod activity;
 mod api_keys;
 mod auth;
 mod domains;
 mod emails;
 mod ses_events;
+mod suppressions;
 mod webhooks;
 
 use axum::{
@@ -33,6 +35,9 @@ pub(crate) struct AppState {
     nats: async_nats::Client,
     ses: Option<aws_sdk_sesv2::Client>,
     aws_region: String,
+    console_origin: String,
+    account_email_from: Option<String>,
+    signup_token: Option<String>,
     event_ingest_token: String,
     webhook_signing_master_key: String,
     object_store: Option<storage::ObjectStore>,
@@ -54,7 +59,19 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let db = db::connect(&settings).await?;
     db::migrate(&db).await?;
-    let nats = async_nats::connect(&settings.nats_url).await?;
+    // async-nats does not automatically use credentials embedded in the URL.
+    let nats_server: async_nats::ServerAddr = settings
+        .nats_url
+        .parse()
+        .map_err(|_| anyhow::anyhow!("NATS_URL must be a valid NATS server URL"))?;
+    let mut nats_options = async_nats::ConnectOptions::new();
+    if let Some(username) = nats_server.username() {
+        nats_options = nats_options.user_and_password(
+            username.to_owned(),
+            nats_server.password().unwrap_or_default().to_owned(),
+        );
+    }
+    let nats = nats_options.connect(nats_server).await?;
     let ses = if settings.domain_provider == "ses" {
         let aws = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .region(aws_config::Region::new(settings.aws_region.clone()))
@@ -72,6 +89,9 @@ async fn main() -> anyhow::Result<()> {
         nats,
         ses,
         aws_region: settings.aws_region.clone(),
+        console_origin: settings.console_origin.clone(),
+        account_email_from: settings.account_email_from.clone(),
+        signup_token: settings.signup_token.clone(),
         event_ingest_token: settings.event_ingest_token.clone(),
         webhook_signing_master_key: settings.webhook_signing_master_key.clone(),
         object_store,
@@ -90,6 +110,8 @@ async fn main() -> anyhow::Result<()> {
         .merge(emails::routes())
         .merge(ses_events::routes())
         .merge(webhooks::routes())
+        .merge(activity::routes())
+        .merge(suppressions::routes())
         .with_state(state)
         .layer(DefaultBodyLimit::max(36_000_000))
         .layer(TimeoutLayer::with_status_code(

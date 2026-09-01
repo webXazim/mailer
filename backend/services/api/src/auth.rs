@@ -28,6 +28,7 @@ pub struct SignupRequest {
     pub first_name: String,
     pub last_name: String,
     pub workspace_name: Option<String>,
+    pub signup_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -79,6 +80,7 @@ pub(crate) struct Usage {
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .route("/v1/auth/config", get(auth_config))
         .route("/v1/auth/signup", post(signup))
         .route("/v1/auth/login", post(login))
         .route("/v1/auth/logout", post(logout))
@@ -97,6 +99,15 @@ async fn signup(
     let ip = client_ip(peer.ip(), &headers, state.trust_proxy_headers);
     if let Err(response) = enforce_auth_limit(&state, &format!("signup:ip:{ip}"), 10).await {
         return response;
+    }
+    if state.signup_token.as_ref().is_some_and(|expected| {
+        !::auth::token_matches(input.signup_token.as_deref().unwrap_or(""), expected)
+    }) {
+        return error(
+            StatusCode::FORBIDDEN,
+            "invite_required",
+            "A valid private signup token is required",
+        );
     }
     let email = input.email.trim().to_lowercase();
     let first = input.first_name.trim();
@@ -128,7 +139,7 @@ async fn signup(
             "Workspace name is invalid",
         );
     }
-    let password_hash = match hash_password(&input.password) {
+    let password_hash = match password_hash_async(input.password.clone()).await {
         Ok(value) => value,
         Err(_) => {
             return error(
@@ -243,6 +254,13 @@ async fn login(
     headers: HeaderMap,
     Json(input): Json<LoginRequest>,
 ) -> Response {
+    if input.password.len() > 256 || input.email.len() > 254 {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Invalid credentials",
+        );
+    }
     let email = input.email.trim().to_lowercase();
     let bucket = chrono::Utc::now()
         .with_second(0)
@@ -284,7 +302,7 @@ async fn login(
         }
     };
     let Some(row) = row else {
-        let _ = verify_password(&input.password, &DUMMY_PASSWORD_HASH);
+        let _ = password_verify_async(input.password.clone(), DUMMY_PASSWORD_HASH.clone()).await;
         return error(
             StatusCode::UNAUTHORIZED,
             "invalid_credentials",
@@ -292,7 +310,7 @@ async fn login(
         );
     };
     let password_hash: String = row.get("password_hash");
-    if !verify_password(&input.password, &password_hash) {
+    if !password_verify_async(input.password.clone(), password_hash).await {
         return error(
             StatusCode::UNAUTHORIZED,
             "invalid_credentials",
@@ -341,31 +359,36 @@ async fn session(State(state): State<AppState>, headers: HeaderMap) -> Response 
 }
 
 async fn workspace(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let Some(token) = read_cookie(&headers) else {
-        return error(
-            StatusCode::UNAUTHORIZED,
-            "not_authenticated",
-            "Authentication required",
-        );
+    let (id, _) = match super::api_keys::access(&state, &headers, "workspace:read", false).await {
+        Ok(v) => v,
+        Err(r) => return r,
     };
-    match load_context(&state, &token).await {
-        Ok(context) => Json(json!({"data": context.workspace})).into_response(),
+    match workspace_context(&state, id).await {
+        Ok(v) => Json(json!({"data":v})).into_response(),
         Err(_) => error(
-            StatusCode::UNAUTHORIZED,
-            "not_authenticated",
-            "Authentication required",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "database_unavailable",
+            "Unable to load workspace",
         ),
     }
 }
 
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Some(token) = read_cookie(&headers) {
-        let _ = sqlx::query(
+        if sqlx::query(
             "UPDATE sessions SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL",
         )
         .bind(hash_token(&token))
         .execute(&state.db)
-        .await;
+        .await
+        .is_err()
+        {
+            return error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "database_unavailable",
+                "Sign out failed; please retry",
+            );
+        }
     }
     with_cookie(
         Json(json!({"data": {"signedOut": true}})).into_response(),
@@ -379,6 +402,13 @@ async fn request_reset(
     headers: HeaderMap,
     Json(input): Json<ResetRequest>,
 ) -> Response {
+    if state.account_email_from.is_none() {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "recovery_unconfigured",
+            "Account email delivery has not been configured by the operator",
+        );
+    }
     let email = input.email.trim().to_lowercase();
     let ip = client_ip(peer.ip(), &headers, state.trust_proxy_headers);
     if enforce_auth_limit(&state, &format!("reset:ip:{ip}"), 10)
@@ -395,8 +425,27 @@ async fn request_reset(
                 .await
         {
             let token = generate_token();
-            let _ = sqlx::query("INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, now() + interval '1 hour')").bind(user_id).bind(hash_token(&token)).execute(&state.db).await;
-            tracing::info!(user_id = %user_id, "password reset requested; delivery integration will be added with the mail pipeline");
+            let mut tx = match state.db.begin().await {
+                Ok(tx) => tx,
+                Err(_) => {
+                    return error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "unavailable",
+                        "Recovery temporarily unavailable",
+                    )
+                }
+            };
+            let link = format!(
+                "{}/#/reset-password?token={}",
+                state.console_origin.trim_end_matches('/'),
+                token
+            );
+            let body = format!("Reset your Mailer password using this link (valid for one hour):\n\n{link}\n\nIf you did not request this, ignore this email.");
+            if sqlx::query("INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES ($1,$2,now()+interval '1 hour')").bind(user_id).bind(hash_token(&token)).execute(&mut *tx).await.is_err()
+                || sqlx::query("INSERT INTO account_emails (recipient,subject,body,expires_at) VALUES ($1,'Reset your Mailer password',$2,now()+interval '1 hour')").bind(&email).bind(body).execute(&mut *tx).await.is_err()
+                || tx.commit().await.is_err() {
+                return error(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "Recovery temporarily unavailable");
+            }
         }
     }
     Json(json!({"data": {"accepted": true}})).into_response()
@@ -404,8 +453,30 @@ async fn request_reset(
 
 async fn complete_reset(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(input): Json<CompleteResetRequest>,
 ) -> Response {
+    let ip = client_ip(peer.ip(), &headers, state.trust_proxy_headers);
+    if let Err(response) = enforce_auth_limit(&state, &format!("reset-complete:{ip}"), 10).await {
+        return response;
+    }
+    if input.token.len() > 256 {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_reset_token",
+            "Invalid reset token",
+        );
+    }
+    let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM password_reset_tokens WHERE token_hash=$1 AND used_at IS NULL AND expires_at>now())")
+        .bind(hash_token(&input.token)).fetch_one(&state.db).await.unwrap_or(false);
+    if !valid {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_reset_token",
+            "Reset link is invalid or expired",
+        );
+    }
     if input.password.len() < 12 || input.password.len() > 256 {
         return error(
             StatusCode::BAD_REQUEST,
@@ -413,7 +484,7 @@ async fn complete_reset(
             "Password must be between 12 and 256 characters",
         );
     }
-    let password_hash = match hash_password(&input.password) {
+    let password_hash = match password_hash_async(input.password.clone()).await {
         Ok(value) => value,
         Err(_) => {
             return error(
@@ -440,8 +511,8 @@ async fn complete_reset(
         .execute(&mut *tx)
         .await
         .is_err()
-        || sqlx::query("UPDATE password_reset_tokens SET used_at = now() WHERE token_hash = $1")
-            .bind(hash_token(&input.token))
+        || sqlx::query("UPDATE password_reset_tokens SET used_at = now() WHERE user_id = $1 AND used_at IS NULL")
+            .bind(user_id)
             .execute(&mut *tx)
             .await
             .is_err()
@@ -492,16 +563,7 @@ pub(crate) async fn load_context(
                 role
             },
         },
-        workspace: WorkspaceContext {
-            id: row.get("workspace_id"),
-            name: row.get("workspace_name"),
-            slug: row.get("slug"),
-            plan: "free".into(),
-            usage: Usage {
-                sent: 0,
-                limit: 1000,
-            },
-        },
+        workspace: workspace_context(state, row.get("workspace_id")).await?,
     })
 }
 
@@ -531,7 +593,7 @@ fn slugify(value: &str) -> String {
         trimmed
     }
 }
-fn read_cookie(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn read_cookie(headers: &HeaderMap) -> Option<String> {
     headers
         .get(header::COOKIE)?
         .to_str()
@@ -568,6 +630,50 @@ fn with_cookie(mut response: Response, value: String) -> Response {
     }
     response
 }
+async fn auth_config(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(
+        json!({"data":{"inviteRequired":state.signup_token.is_some(),"passwordRecovery":state.account_email_from.is_some()}}),
+    )
+}
+
+async fn workspace_context(state: &AppState, id: Uuid) -> Result<WorkspaceContext, sqlx::Error> {
+    let row = sqlx::query("SELECT w.name,w.slug,COALESCE(u.emails_accepted,0)::bigint AS sent,l.monthly_email_limit FROM workspaces w LEFT JOIN usage_counters u ON u.workspace_id=w.id AND u.period_start=date_trunc('month',now())::date LEFT JOIN workspace_limits l ON l.workspace_id=w.id WHERE w.id=$1").bind(id).fetch_one(&state.db).await?;
+    Ok(WorkspaceContext {
+        id,
+        name: row.get("name"),
+        slug: row.get("slug"),
+        plan: "private".into(),
+        usage: Usage {
+            sent: row.get("sent"),
+            limit: row
+                .get::<Option<i64>, _>("monthly_email_limit")
+                .unwrap_or(state.workspace_monthly_email_limit as i64),
+        },
+    })
+}
+
+static PASSWORD_WORK: LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
+async fn password_hash_async(password: String) -> anyhow::Result<String> {
+    let permit = PASSWORD_WORK.clone().acquire_owned().await?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        hash_password(&password)
+    })
+    .await?
+}
+async fn password_verify_async(password: String, hash: String) -> bool {
+    let Ok(permit) = PASSWORD_WORK.clone().acquire_owned().await else {
+        return false;
+    };
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        verify_password(&password, &hash)
+    })
+    .await
+    .unwrap_or(false)
+}
+
 fn error(status: StatusCode, code: &str, message: &str) -> Response {
     (status, Json(json!({"code": code, "message": message}))).into_response()
 }

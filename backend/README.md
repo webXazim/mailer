@@ -16,7 +16,7 @@ Requirements: Rust stable and Docker with Compose.
 
 ```bash
 cp .env.example .env
-./manage dev
+sh manage dev
 ```
 
 The API listens on `http://localhost:8080`. Liveness is available at
@@ -31,17 +31,16 @@ local development uses a non-secure cookie for `http://localhost`.
 
 API key management is available under `/v1/api-keys`. Secrets are shown only
 on creation or rotation, stored as hashes, scoped to a workspace, and can be
-revoked or expired. The verifier is ready for the send API and checks both
-workspace ownership and the required permission scope.
+revoked or expired. The verifier enforces workspace ownership, permission scope, and the email environment. Rotation is transactional; revocation errors never return success.
 
 Domain onboarding is available under `/v1/domains`. In production,
 `DOMAIN_PROVIDER=ses` is required. Adding a domain creates an SES identity,
 configures a custom MAIL FROM subdomain, and returns the required DKIM, SPF,
-MX, and DMARC records. Verification polls SES and checks DNS; only domains
+MX, DMARC, and unique ownership TXT records. Existing provider identities are reconciled after interrupted provisioning; disabling a Mailer domain preserves the SES identity so other applications are not disrupted. Verification polls SES and checks DNS; only domains
 with verified SES sending status and required DNS records become `verified`.
 
 The developer submission endpoint is `POST /v1/emails`. It requires an API
-key with `emails:send`, a matching test/production environment, and an
+key with `emails:send` (or an owner/admin console session), a matching test/production environment, and an
 `Idempotency-Key` header. The API validates the verified sender domain and
 suppressions, then atomically stores the email, recipients, idempotency result,
 and transactional outbox event before returning `202 Accepted`.
@@ -51,7 +50,7 @@ stream and consumes them with explicit acknowledgements, bounded retries, and
 a `MAILER_DLQ` stream. Test-environment jobs are simulated locally; production
 jobs use SES. A provider timeout after SES may have accepted a message is
 treated as ambiguous: the email is quarantined for manual review after the
-processing claim becomes stale instead of being silently resent.
+provider result is uncertain instead of being silently resent. Typed throttling errors retry with backoff; automatic SDK retries are disabled for sending. Shutdown drains bounded in-flight work; maintenance reconciles stale claims and expired queues.
 
 SES delivery, bounce, complaint, reject, rendering-failure, open, and click
 events are consumed from SQS through an SNS subscription. The worker verifies
@@ -92,29 +91,25 @@ With the React app in `frontend/` running on `http://localhost:5173`, keep
 ## Verification
 
 ```bash
-./manage check
+sh manage check
 ```
 
 ## Production Configuration
 
-Use [`../.env.production.example`](../.env.production.example) as the production
-checklist. Store the real `.env` outside Git with file mode `0600`. Build and
-publish immutable frontend, API, and worker images in CI, then deploy with:
+Use [`../.env.production.example`](../.env.production.example). All credentials
+are grouped first; generated local secrets stay stable between deployments.
+See the [root VPS guide](../README.md#vps-deployment-testing-then-production) for
+initial setup and the Cloudflare route. From the repository root:
 
 ```bash
-docker compose --env-file .env \
-  -f docker-compose.yml \
-  -f docker-compose.production.yml \
-  pull
-docker compose --env-file .env \
-  -f docker-compose.yml \
-  -f docker-compose.production.yml \
-  up -d --no-build
+sh manage deploy
 ```
 
-Only the API is bound to VPS loopback. Put Caddy, Nginx, or Traefik in front of
-`127.0.0.1:8080` for `api.mailer.crescentsphere.com`. PostgreSQL and NATS have
-no production host ports.
+This validates configuration, builds the API/worker/frontend on the VPS and
+starts the standalone production Compose stack. Production no longer requires
+CI-published images, Caddy or a separate API hostname. Do not merge the production
+file with the development Compose file. The API base is
+`https://mailer.crescentsphere.com/api`.
 
 ### AWS
 
@@ -129,7 +124,7 @@ separate DLQ. Subscribe the queue to the topic with raw message delivery
 disabled, permit only that topic to call `sqs:SendMessage`, and configure the
 SES configuration set to publish delivery, bounce, complaint, reject,
 rendering-failure, open, and click events to the topic. Enter the final queue
-URL and exact topic ARN as `SES_EVENTS_QUEUE_URL` and `SES_EVENTS_TOPIC_ARN`.
+URL and exact topic ARN as `SES_EVENTS_QUEUE_URL` and `SES_EVENTS_TOPIC_ARN`. Set `SES_CONFIGURATION_SET` to this configuration-set name and ensure the worker IAM policy includes its ARN. Set `ACCOUNT_EMAIL_FROM` to an SES-verified sender for password-reset emails.
 
 Provide the `API_AWS_*` and `WORKER_AWS_*` credentials only through the VPS
 secret environment. Use separate IAM users: the API identity manages SES
@@ -175,7 +170,7 @@ PostgreSQL. Defaults are configured with `API_KEY_RATE_LIMIT_PER_MINUTE`,
 `CLIENT_IP_RATE_LIMIT_PER_MINUTE`, `WORKSPACE_MONTHLY_EMAIL_LIMIT`, and
 `WORKSPACE_CONCURRENT_EMAIL_LIMIT`. Paid-plan overrides can be written to
 `workspace_limits` without restarting services. The production reverse proxy
-must connect over loopback and set `X-Real-IP`; forwarded IP headers are
+connects over loopback in the API network namespace and sets `X-Real-IP`; forwarded IP headers are
 ignored for non-loopback peers. Old minute buckets are removed hourly.
 
 ### Public-launch security gates
@@ -197,29 +192,93 @@ JetStream restoration before accepting customer traffic.
 
 ### VPS deployment and recovery
 
-Install Docker Compose, Caddy, `age`, `rclone`, and `curl` on the VPS. Copy
-`backend/deploy/Caddyfile` to Caddy's configuration directory and proxy only
-`api.mailer.crescentsphere.com`; the Caddy rule deliberately returns `404` for
-all `/internal/*` paths. Copy the real environment file to
-`/opt/crescentsphere-mailer/.env` with mode `0600`, install the systemd units
-and timers under `backend/deploy/systemd/`, then enable the backup and health timers.
+Follow the root VPS guide for deployment. `backend/deploy/Caddyfile` is a legacy
+reference and is not used by the Cloudflare deployment. Production Compose uses
+private networks, authenticated NATS, bounded logs/PIDs/resources, and unprivileged
+read-only application containers. `sh manage preflight` checks credentials and
+Compose without displaying secrets; it does not verify live provider permissions.
+
+For offsite backups, install Bash, `age`, `rclone`, and `curl` on the VPS. Configure the
+backup/alert values near the top of `.env` (mode `0600`). Install the units and
+timers under `backend/deploy/systemd/` after reviewing their paths, then enable
+the backup and health timers. The default checkout is `/opt/crescentsphere-mailer`.
 
 The backup job creates an encrypted PostgreSQL custom dump, uploads it to the
 configured immutable rclone remote, and prunes only local files older than the
-configured retention period. Before launch and after every migration, run
-`./manage restore-rehearsal` against its fixed disposable restore database.
-Keep the age private identity offline from routine backup jobs; the backup job
-needs only the public recipient.
+retention period. Before launch and after every migration, run
+`sh manage restore-rehearsal` against its fixed disposable database. Install a
+compatible PostgreSQL client for its host-side `pg_restore --list` check. Keep
+the age private identity offline from routine backup jobs; only restore needs it.
+Never point the rehearsal at the live database or use it as a live rollback.
 
-The production Compose overlay binds the API to loopback and leaves PostgreSQL
-and NATS without host ports. NATS uses unique authenticated credentials.
-Application containers run as an unprivileged user with dropped capabilities,
-no-new-privileges, read-only root filesystems, bounded PIDs, and bounded logs.
+PostgreSQL backups do not cover NATS JetStream or R2 objects. Establish their
+retention/recovery strategy and rehearse full recovery before accepting customers.
+Changing the PostgreSQL password in `.env` alone does not change an existing
+volume's database password. Coordinate database credential changes explicitly.
+Changing the webhook master key invalidates existing customer webhook secrets.
 
-After entering production values, run `./manage preflight`. It requires the
-environment file to be mode `0600`, rejects known placeholder/development
-values, checks both public DNS names, validates the merged Compose model, and
-validates the Caddy configuration without starting services. AWS policy
-starting points are under `backend/deploy/aws/`; replace the account and configuration
-set placeholders, then review the effective policy in AWS before creating
-access keys.
+AWS policy starting points are under `backend/deploy/aws/`; replace account and
+configuration-set placeholders and review the effective permissions in AWS.
+
+
+## Private release API contract
+
+- `POST /v1/auth/signup` requires `signup_token` when `SIGNUP_TOKEN` is configured
+  (mandatory in production). This is trusted invite-only onboarding, not public signup/email verification.
+- `GET /v1/auth/config` advertises invite/recovery availability. Signup/login use
+  `email`, `password`; signup additionally uses `first_name`, `last_name`, `workspace_name`.
+- `GET /v1/emails?limit=25&offset=0&environment=test` lists messages. Keys only see
+  their environment; a console session can select either. `GET /v1/emails/{id}` returns
+  status, recipients, up to 100 latest events, metadata, and retained body content.
+- `POST /v1/emails` supports `from`, `to`, `cc`, `bcc`, `subject`, `text`, `html`,
+  `reply_to`, `metadata`, `attachments`, and optional `environment` (inferred from the key).
+  The total To/CC/BCC limit is 50. Nonempty `headers` or `tags` are explicitly rejected.
+  Idempotency is scoped to workspace **and environment**; retry identical requests
+  with the same key. Keys are retained without automatic expiry in this release.
+- Test sends may use `sender@sandbox.mailer.invalid`. They generate persisted delivery
+  events and webhooks without calling SES. Use `bounce@simulator.mailer.invalid` or
+  `complaint@simulator.mailer.invalid` to test suppression. Suppressions are workspace-wide.
+- `GET/POST /v1/suppressions` and `DELETE /v1/suppressions/{id}` require owner/admin or
+  `suppressions:manage`; POST accepts `{ "address": "recipient@example.com" }`.
+- Domain management accepts `domains:read`/`domains:write`; webhook management accepts
+  `webhooks:manage`; workspace details accept `workspace:read`. Control-plane permissions
+  manage shared workspace resources regardless of a key's sending environment.
+- Creating a webhook requires `{ "url": "https://hooks.example.com/events",
+  "environment": "test", "subscriptions": ["email.delivery"] }`. Its environment is
+  fixed; recreate to change it. Literal IP addresses, local names, and private DNS
+  destinations are blocked. Existing endpoints migrate to `production`.
+- Webhook payload `{id,type,createdAt,data}` includes `data.emailId`, `data.environment`,
+  and `data.metadata`. `type` matches subscriptions (`email.delivery`, `email.bounce`, etc.).
+  The signature uses the **complete whsec_ secret as UTF-8**, not a decoded key;
+  output is unpadded base64url. Check timestamps and deduplicate webhook-id. Retries
+  may duplicate delivery; email API idempotency does not make webhook handling exactly once.
+
+The monthly limit counts accepted message submissions, including test messages, not
+recipients/provider billing units. Concurrency/rate limits are additional safeguards.
+SES account quotas and reputation need independent monitoring. Templates, custom headers,
+tags, billing, public signup verification, MFA, and team administration are deferred.
+
+## Recovery and retention
+
+Password-reset requests enqueue expiring messages in `account_emails`. The worker sends
+them from `ACCOUNT_EMAIL_FROM`, clears the raw link on success/failure/expiry, and only
+retries definite throttling responses. Users can request another link after failure.
+Reset completion invalidates outstanding reset tokens and all existing sessions.
+
+Failed or uncertain developer sends are visible in email details with `lastError` and
+in `delivery_dead_letters`. An operator must reconcile uncertain results with SES
+before sending a replacement using a **new** idempotency key. There is deliberately
+no blind resend button for ambiguous provider acceptance.
+
+Content retention also covers `sent` messages whose final provider event never arrived.
+Configure an R2/S3 lifecycle safety net for orphaned `workspaces/` objects at a duration
+longer than `EMAIL_CONTENT_RETENTION_DAYS` plus the seven-day queue window. The lifecycle
+rule is an operator setup step; the application cannot enumerate uncertain orphan objects.
+
+## Repeatable integration checks
+
+From the repository root, build the isolated test images named in
+`backend/deploy/tests/integration.py`, then run that script with Python 3. It creates and
+removes only a unique test stack, uses fake credentials, and never starts cloudflared.
+Production requests in the suite are not passed to SES. The optional `--keep` flag is
+for local browser QA and requires explicit cleanup of the recorded test project afterward.

@@ -37,6 +37,67 @@ pub fn hash_token(token: &str) -> Vec<u8> {
     Sha256::digest(token.as_bytes()).to_vec()
 }
 
+pub fn token_matches(left: &str, right: &str) -> bool {
+    hash_token(left)
+        .iter()
+        .zip(hash_token(right))
+        .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+        == 0
+}
+
+/// Webhooks require a DNS hostname; literal addresses bypass Hyper's DNS resolver.
+pub fn public_webhook_url(value: &str) -> Result<url::Url> {
+    let url = url::Url::parse(value)?;
+    anyhow::ensure!(
+        value.len() <= 2048
+            && url.scheme() == "https"
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.fragment().is_none(),
+        "Use an HTTPS URL without credentials or fragments"
+    );
+    match url.host() {
+        Some(url::Host::Domain(host))
+            if host.contains('.')
+                && !host.ends_with('.')
+                && host != "localhost"
+                && !host.ends_with(".localhost") =>
+        {
+            Ok(url)
+        }
+        _ => anyhow::bail!("Webhook URLs require a public DNS hostname, not an IP address"),
+    }
+}
+
+pub fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v) => {
+            let [a, b, _, _] = v.octets();
+            !(v.is_private()
+                || v.is_loopback()
+                || v.is_link_local()
+                || v.is_unspecified()
+                || v.is_broadcast()
+                || v.is_documentation()
+                || a == 0
+                || a >= 224
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 198 && (b == 18 || b == 19))
+                || (a == 192 && b == 0))
+        }
+        IpAddr::V6(v) => match v.to_ipv4_mapped() {
+            Some(v4) => is_public_ip(IpAddr::V4(v4)),
+            None => {
+                (v.segments()[0] & 0xe000) == 0x2000
+                    && !(v.segments()[0] == 0x2001 && v.segments()[1] < 0x200)
+                    && !(v.segments()[0] == 0x2001 && v.segments()[1] == 0xdb8)
+                    && v.segments()[0] != 0x2002
+            }
+        },
+    }
+}
+
 pub fn webhook_secret(master_key: &str, endpoint_id: Uuid, version: i32) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(master_key.as_bytes())
         .expect("HMAC accepts keys of any length");
@@ -62,6 +123,34 @@ pub fn webhook_signature(secret: &str, webhook_id: &str, timestamp: i64, body: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn webhook_destinations_reject_private_and_literal_addresses() {
+        for value in [
+            "https://[::1]/",
+            "https://[::ffff:127.0.0.1]/",
+            "https://127.0.0.1/",
+            "http://hooks.example.com",
+            "https://localhost/",
+            "https://hooks.localhost/",
+        ] {
+            assert!(public_webhook_url(value).is_err(), "{value}");
+        }
+        assert!(public_webhook_url("https://hooks.example.com/events").is_ok());
+        for value in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "::1",
+            "::ffff:10.1.1.1",
+            "fc00::1",
+            "fe80::1",
+        ] {
+            assert!(!is_public_ip(value.parse().unwrap()), "{value}");
+        }
+        assert!(is_public_ip("8.8.8.8".parse().unwrap()));
+    }
 
     #[test]
     fn passwords_hash_and_verify() {

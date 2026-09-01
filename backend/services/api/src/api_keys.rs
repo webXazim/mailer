@@ -18,7 +18,7 @@ const ALLOWED_SCOPES: &[&str] = &[
     "domains:read",
     "domains:write",
     "webhooks:manage",
-    "templates:manage",
+    "suppressions:manage",
     "workspace:read",
 ];
 
@@ -160,7 +160,17 @@ async fn rotate_key(
         Ok(value) => value,
         Err(response) => return response,
     };
-    let existing = match sqlx::query("SELECT name, environment, scopes, expires_at FROM api_keys WHERE id = $1 AND workspace_id = $2 AND revoked_at IS NULL").bind(id).bind(workspace_id).fetch_optional(&state.db).await { Ok(Some(value)) => value, Ok(None) => return error(StatusCode::NOT_FOUND, "api_key_not_found", "API key was not found"), Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to rotate API key") };
+    let mut tx = match state.db.begin().await {
+        Ok(tx) => tx,
+        Err(_) => {
+            return error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "database_unavailable",
+                "Unable to rotate API key",
+            )
+        }
+    };
+    let existing = match sqlx::query("SELECT name, environment, scopes, expires_at FROM api_keys WHERE id = $1 AND workspace_id = $2 AND revoked_at IS NULL FOR UPDATE").bind(id).bind(workspace_id).fetch_optional(&mut *tx).await { Ok(Some(value)) => value, Ok(None) => return error(StatusCode::NOT_FOUND, "api_key_not_found", "API key was not found"), Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to rotate API key") };
     let secret = format!(
         "cs_{}_{}",
         if existing.get::<String, _>("environment") == "production" {
@@ -172,13 +182,21 @@ async fn rotate_key(
     );
     let prefix: String = secret.chars().take(16).collect();
     let new_id = match sqlx::query_scalar::<_, Uuid>("INSERT INTO api_keys (workspace_id, name, key_prefix, secret_hash, environment, scopes, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id")
-        .bind(workspace_id).bind(existing.get::<String, _>("name")).bind(&prefix).bind(hash_token(&secret)).bind(existing.get::<String, _>("environment")).bind(existing.get::<serde_json::Value, _>("scopes")).bind(existing.get::<Option<chrono::DateTime<chrono::Utc>>, _>("expires_at")).fetch_one(&state.db).await { Ok(value) => value, Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to rotate API key") };
-    let _ =
-        sqlx::query("UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND workspace_id = $2")
-            .bind(id)
-            .bind(workspace_id)
-            .execute(&state.db)
-            .await;
+        .bind(workspace_id).bind(existing.get::<String, _>("name")).bind(&prefix).bind(hash_token(&secret)).bind(existing.get::<String, _>("environment")).bind(existing.get::<serde_json::Value, _>("scopes")).bind(existing.get::<Option<chrono::DateTime<chrono::Utc>>, _>("expires_at")).fetch_one(&mut *tx).await { Ok(value) => value, Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to rotate API key") };
+    if sqlx::query("UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND workspace_id = $2")
+        .bind(id)
+        .bind(workspace_id)
+        .execute(&mut *tx)
+        .await
+        .is_err()
+        || tx.commit().await.is_err()
+    {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "rotation_failed",
+            "API key rotation did not complete",
+        );
+    }
     Json(json!({"data": {"id": new_id, "prefix": prefix, "secret": secret}})).into_response()
 }
 
@@ -241,6 +259,54 @@ pub(crate) async fn workspace_id(state: &AppState, headers: &HeaderMap) -> Resul
         ));
     }
     Ok(context.workspace.id)
+}
+
+/// Authorization is explicit: API keys never fall back to a browser session.
+pub(crate) async fn access(
+    state: &AppState,
+    headers: &HeaderMap,
+    scope: &str,
+    admin: bool,
+) -> Result<(Uuid, Option<String>), Response> {
+    if let Some(value) = headers.get(header::AUTHORIZATION) {
+        let raw = value
+            .to_str()
+            .ok()
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .unwrap_or("");
+        return verify(raw, &state.db, scope)
+            .await
+            .map(|(_, workspace, environment)| (workspace, Some(environment)))
+            .map_err(|_| {
+                error(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid_api_key",
+                    "Valid API key with the required scope needed",
+                )
+            });
+    }
+    let token = super::auth::read_cookie(headers).ok_or_else(|| {
+        error(
+            StatusCode::UNAUTHORIZED,
+            "not_authenticated",
+            "Sign in required",
+        )
+    })?;
+    let context = load_context(state, &token).await.map_err(|_| {
+        error(
+            StatusCode::UNAUTHORIZED,
+            "not_authenticated",
+            "Sign in required",
+        )
+    })?;
+    if admin && !matches!(context.user.role.as_str(), "owner" | "admin") {
+        return Err(error(
+            StatusCode::FORBIDDEN,
+            "insufficient_role",
+            "Owner or admin required",
+        ));
+    }
+    Ok((context.workspace.id, None))
 }
 
 fn error(status: StatusCode, code: &str, message: &str) -> Response {

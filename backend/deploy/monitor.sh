@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-if "$(dirname "$0")/healthcheck.sh"; then
+if sh "$(dirname "$0")/healthcheck.sh"; then
     exit 0
 fi
 

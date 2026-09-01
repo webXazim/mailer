@@ -1,7 +1,8 @@
-use super::{auth::load_context, AppState};
+use super::AppState;
+use aws_sdk_sesv2::error::ProvideErrorMetadata;
 use axum::{
     extract::{Path, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -62,18 +63,33 @@ async fn add_domain(
             "Enter a valid domain name",
         );
     };
-    if domain == "crescentsphere.com" || domain.ends_with(".crescentsphere.com") {
+    let mut tx = match state.db.begin().await {
+        Ok(tx) => tx,
+        Err(_) => {
+            return error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "database_unavailable",
+                "Unable to add domain",
+            )
+        }
+    };
+    if sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("domain:{domain}"))
+        .execute(&mut *tx)
+        .await
+        .is_err()
+    {
         return error(
-            StatusCode::BAD_REQUEST,
-            "invalid_domain",
-            "This domain cannot be used for customer sending",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "database_unavailable",
+            "Unable to reserve domain",
         );
     }
     match sqlx::query_scalar::<_, Uuid>(
         "SELECT id FROM domains WHERE lower(name) = $1 AND status <> 'disabled'",
     )
     .bind(&domain)
-    .fetch_optional(&state.db)
+    .fetch_optional(&mut *tx)
     .await
     {
         Ok(Some(_)) => {
@@ -99,26 +115,48 @@ async fn add_domain(
             "Domain verification is not configured in this environment",
         );
     };
-    let identity = match ses
+    let dkim_tokens = match ses
         .create_email_identity()
         .email_identity(&domain)
         .send()
         .await
     {
-        Ok(value) => value,
-        Err(provider_error) => {
-            tracing::error!(error = %provider_error, domain = %domain, "SES identity creation failed");
+        Ok(identity) => identity
+            .dkim_attributes()
+            .map(|v| v.tokens().to_vec())
+            .unwrap_or_default(),
+        Err(error_value)
+            if error_value.as_service_error().and_then(|v| v.code())
+                == Some("AlreadyExistsException") =>
+        {
+            // Reconcile an earlier successful provider call whose DB commit failed.
+            match ses
+                .get_email_identity()
+                .email_identity(&domain)
+                .send()
+                .await
+            {
+                Ok(identity) => identity
+                    .dkim_attributes()
+                    .map(|v| v.tokens().to_vec())
+                    .unwrap_or_default(),
+                Err(_) => {
+                    return error(
+                        StatusCode::BAD_GATEWAY,
+                        "provider_error",
+                        "Unable to reconcile sending identity",
+                    )
+                }
+            }
+        }
+        Err(_) => {
             return error(
                 StatusCode::BAD_GATEWAY,
                 "provider_error",
-                "Unable to create the sending identity",
-            );
+                "Unable to create sending identity",
+            )
         }
     };
-    let dkim_tokens = identity
-        .dkim_attributes()
-        .map(|attributes| attributes.tokens())
-        .unwrap_or_default();
     if dkim_tokens.is_empty() {
         return error(
             StatusCode::BAD_GATEWAY,
@@ -135,27 +173,12 @@ async fn add_domain(
         .await
     {
         tracing::error!(error = %provider_error, domain = %domain, "SES MAIL FROM configuration failed");
-        let _ = ses
-            .delete_email_identity()
-            .email_identity(&domain)
-            .send()
-            .await;
         return error(
             StatusCode::BAD_GATEWAY,
             "provider_error",
             "Unable to configure the sending identity",
         );
     }
-    let mut tx = match state.db.begin().await {
-        Ok(value) => value,
-        Err(_) => {
-            return error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
-                "Unable to add domain",
-            )
-        }
-    };
     let row = match sqlx::query(
         "INSERT INTO domains (workspace_id, name) VALUES ($1, $2) RETURNING id, status, created_at",
     )
@@ -181,7 +204,13 @@ async fn add_domain(
         }
     };
     let domain_id: Uuid = row.get("id");
-    let records = dns_records(&domain, &state.aws_region, dkim_tokens);
+    let mut records = dns_records(&domain, &state.aws_region, &dkim_tokens);
+    records.push((
+        "TXT".into(),
+        format!("_mailer-verification.{domain}"),
+        format!("mailer-verification={domain_id}"),
+        true,
+    ));
     for (record_type, name, value, required) in &records {
         if sqlx::query("INSERT INTO domain_dns_records (domain_id, record_type, name, value, required_for_sending) VALUES ($1, $2, $3, $4, $5)")
             .bind(domain_id).bind(record_type).bind(name).bind(value).bind(required).execute(&mut *tx).await.is_err() {
@@ -268,50 +297,7 @@ async fn delete_domain(
         Ok(value) => value,
         Err(response) => return response,
     };
-    let name = match sqlx::query_scalar::<_, String>(
-        "SELECT name FROM domains WHERE id = $1 AND workspace_id = $2 AND status <> 'disabled'",
-    )
-    .bind(id)
-    .bind(workspace_id)
-    .fetch_optional(&state.db)
-    .await
-    {
-        Ok(Some(value)) => value,
-        Ok(None) => {
-            return error(
-                StatusCode::NOT_FOUND,
-                "domain_not_found",
-                "Domain was not found",
-            )
-        }
-        Err(_) => {
-            return error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
-                "Unable to remove domain",
-            )
-        }
-    };
-    let Some(ses) = &state.ses else {
-        return error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "domain_provider_unavailable",
-            "Domain verification is not configured in this environment",
-        );
-    };
-    if let Err(provider_error) = ses
-        .delete_email_identity()
-        .email_identity(&name)
-        .send()
-        .await
-    {
-        tracing::error!(error = %provider_error, domain = %name, "SES identity deletion failed");
-        return error(
-            StatusCode::BAD_GATEWAY,
-            "provider_error",
-            "Unable to remove the sending identity",
-        );
-    }
+    // Disabling Mailer must not delete an SES identity shared with another application.
     match sqlx::query("UPDATE domains SET status = 'disabled', updated_at = now() WHERE id = $1 AND workspace_id = $2 AND status <> 'disabled'").bind(id).bind(workspace_id).execute(&state.db).await { Ok(result) if result.rows_affected() == 1 => Json(json!({"data": {"disabled": true}})).into_response(), Ok(_) => error(StatusCode::NOT_FOUND, "domain_not_found", "Domain was not found"), Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to remove domain") }
 }
 
@@ -396,7 +382,7 @@ async fn verify_domain(
     } else {
         "pending"
     };
-    let _ = sqlx::query("UPDATE domains SET status = $1, provider_status = $2, verified_at = CASE WHEN $1 = 'verified' THEN now() ELSE NULL END, updated_at = now() WHERE id = $3").bind(domain_status).bind(provider_status).bind(id).execute(&state.db).await;
+    if sqlx::query("UPDATE domains SET status = $1, provider_status = $2, verified_at = CASE WHEN $1 = 'verified' THEN now() ELSE NULL END, updated_at = now() WHERE id = $3").bind(domain_status).bind(provider_status).bind(id).execute(&state.db).await.is_err() { return error(StatusCode::SERVICE_UNAVAILABLE,"database_unavailable","Unable to store verification result"); }
     Json(json!({"data": {"domain": name, "status": domain_status, "verified": verified, "providerVerified": provider_verified, "requiredDnsVerified": required_dns_verified}})).into_response()
 }
 
@@ -504,7 +490,7 @@ fn dns_records(
     records.push((
         "DMARC".into(),
         format!("_dmarc.{domain}"),
-        "v=DMARC1; p=none; rua=mailto:dmarc@crescentsphere.com".into(),
+        "v=DMARC1; p=none".into(),
         false,
     ));
     records
@@ -535,39 +521,20 @@ async fn workspace_id(
     headers: &HeaderMap,
     require_admin: bool,
 ) -> Result<Uuid, Response> {
-    let token = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| {
-            value.split(';').map(str::trim).find_map(|pair| {
-                pair.strip_prefix("cs_session=")
-                    .or_else(|| pair.strip_prefix("__Host-cs_session="))
-                    .map(str::to_owned)
-            })
-        })
-        .ok_or_else(|| {
-            error(
-                StatusCode::UNAUTHORIZED,
-                "not_authenticated",
-                "Authentication required",
-            )
-        })?;
-    let context = load_context(state, &token).await.map_err(|_| {
-        error(
-            StatusCode::UNAUTHORIZED,
-            "not_authenticated",
-            "Authentication required",
-        )
-    })?;
-    if require_admin && !matches!(context.user.role.as_str(), "owner" | "admin") {
-        return Err(error(
-            StatusCode::FORBIDDEN,
-            "insufficient_role",
-            "Owner or admin access is required",
-        ));
-    }
-    Ok(context.workspace.id)
+    super::api_keys::access(
+        state,
+        headers,
+        if require_admin {
+            "domains:write"
+        } else {
+            "domains:read"
+        },
+        require_admin,
+    )
+    .await
+    .map(|v| v.0)
 }
+
 fn error(status: StatusCode, code: &str, message: &str) -> Response {
     (status, Json(json!({"code": code, "message": message}))).into_response()
 }

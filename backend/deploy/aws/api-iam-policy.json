@@ -6,7 +6,6 @@
       "Effect": "Allow",
       "Action": [
         "ses:CreateEmailIdentity",
-        "ses:DeleteEmailIdentity",
         "ses:GetEmailIdentity",
         "ses:PutEmailIdentityMailFromAttributes"
       ],

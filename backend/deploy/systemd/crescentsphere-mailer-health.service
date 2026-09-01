@@ -7,6 +7,6 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/opt/crescentsphere-mailer
 EnvironmentFile=/opt/crescentsphere-mailer/.env
-ExecStart=/opt/crescentsphere-mailer/backend/deploy/monitor.sh
+ExecStart=/bin/sh /opt/crescentsphere-mailer/backend/deploy/monitor.sh
 PrivateTmp=true
 NoNewPrivileges=true

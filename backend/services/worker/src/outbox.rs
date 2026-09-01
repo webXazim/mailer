@@ -59,7 +59,7 @@ async fn create_webhook_deliveries(
     event_id: Uuid,
     event_type: &str,
 ) -> Result<()> {
-    let endpoint_ids = sqlx::query_scalar::<_, Uuid>("SELECT endpoint.id FROM webhook_endpoints endpoint JOIN delivery_events event ON event.id = $1 JOIN emails email ON email.id = event.email_id WHERE endpoint.workspace_id = email.workspace_id AND endpoint.enabled = true AND endpoint.subscriptions ? $2")
+    let endpoint_ids = sqlx::query_scalar::<_, Uuid>("SELECT endpoint.id FROM webhook_endpoints endpoint JOIN delivery_events event ON event.id = $1 JOIN emails email ON email.id = event.email_id WHERE endpoint.workspace_id = email.workspace_id AND endpoint.enabled = true AND endpoint.environment = email.environment AND endpoint.subscriptions ? $2")
         .bind(event_id)
         .bind(event_type)
         .fetch_all(&mut **tx)

@@ -4,7 +4,7 @@ import { api } from '../../lib/api/client'
 export type Envelope<T> = { data: T; hasMore?: boolean; nextOffset?: number | null }
 export type Environment = 'test' | 'production'
 export type Session = { user: { id: string; name: string; email: string; role: string }; workspace: { id: string; name: string; production_enabled: boolean; usage: { sent: number; limit: number } } }
-export type Domain = { id: string; domain: string; status: string; records: { record_type: string; name: string; value: string; required: boolean; status: string; last_checked_at?: string }[] }
+export type Domain = { id: string; domain: string; status: string; dns_automation: string[]; records: { record_type: string; name: string; value: string; required: boolean; status: string; last_checked_at?: string }[] }
 export type Key = { id: string; name: string; prefix: string; environment: Environment; scopes: string[] }
 export type Endpoint = { id: string; url: string; environment: Environment; subscriptions: string[]; enabled: boolean }
 export type Delivery = { id: string; status: string; attempts: number; eventType: string; lastError?: string; createdAt: string }

@@ -18,6 +18,10 @@ case "${AUTH_EMAIL_DELIVERY_ENABLED:-false}" in
     false) ;;
     *) fail 'AUTH_EMAIL_DELIVERY_ENABLED must be true or false.' ;;
 esac
+if { test -n "${CLOUDFLARE_OAUTH_CLIENT_ID:-}" && test -z "${CLOUDFLARE_OAUTH_CLIENT_SECRET:-}"; } ||
+   { test -z "${CLOUDFLARE_OAUTH_CLIENT_ID:-}" && test -n "${CLOUDFLARE_OAUTH_CLIENT_SECRET:-}"; }; then
+    fail 'Set both CLOUDFLARE_OAUTH_CLIENT_ID and CLOUDFLARE_OAUTH_CLIENT_SECRET, or leave both empty.'
+fi
 for name in POSTGRES_PASSWORD NATS_PASSWORD; do
     eval "value=\${$name}"
     test "${#value}" -ge 32 || fail "$name must contain at least 32 hex characters."

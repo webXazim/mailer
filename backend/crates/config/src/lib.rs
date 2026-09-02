@@ -19,6 +19,9 @@ pub struct Settings {
     pub auth_email_delivery_enabled: bool,
     pub turnstile_site_key: Option<String>,
     pub turnstile_secret_key: Option<String>,
+    pub cloudflare_oauth_client_id: Option<String>,
+    pub cloudflare_oauth_client_secret: Option<String>,
+    pub cloudflare_oauth_scopes: String,
     pub domain_provider: String,
     pub event_ingest_token: String,
     pub webhook_signing_master_key: String,
@@ -60,6 +63,10 @@ impl Settings {
         let auth_email_delivery_enabled = parse_bool("AUTH_EMAIL_DELIVERY_ENABLED", false)?;
         let turnstile_site_key = optional("TURNSTILE_SITE_KEY");
         let turnstile_secret_key = optional("TURNSTILE_SECRET_KEY");
+        let cloudflare_oauth_client_id = optional("CLOUDFLARE_OAUTH_CLIENT_ID");
+        let cloudflare_oauth_client_secret = optional("CLOUDFLARE_OAUTH_CLIENT_SECRET");
+        let cloudflare_oauth_scopes =
+            env::var("CLOUDFLARE_OAUTH_SCOPES").unwrap_or_else(|_| "zone.read dns.write".into());
         let domain_provider = env::var("DOMAIN_PROVIDER").unwrap_or_else(|_| "disabled".into());
         let event_ingest_token =
             env::var("EVENT_INGEST_TOKEN").unwrap_or_else(|_| DEVELOPMENT_EVENT_TOKEN.into());
@@ -110,6 +117,9 @@ impl Settings {
                 || object_storage_secret_access_key.is_none())
         {
             bail!("OBJECT_STORAGE_ENDPOINT, OBJECT_STORAGE_BUCKET, OBJECT_STORAGE_ACCESS_KEY_ID, and OBJECT_STORAGE_SECRET_ACCESS_KEY are required when object storage is enabled");
+        }
+        if cloudflare_oauth_client_id.is_some() != cloudflare_oauth_client_secret.is_some() {
+            bail!("CLOUDFLARE_OAUTH_CLIENT_ID and CLOUDFLARE_OAUTH_CLIENT_SECRET must be set together");
         }
         let log_level = env::var("RUST_LOG").unwrap_or_else(|_| "info,sqlx=warn".into());
         let db_min_connections = parse_u32("DB_MIN_CONNECTIONS", 2)?;
@@ -207,6 +217,9 @@ impl Settings {
             auth_email_delivery_enabled,
             turnstile_site_key,
             turnstile_secret_key,
+            cloudflare_oauth_client_id,
+            cloudflare_oauth_client_secret,
+            cloudflare_oauth_scopes,
             domain_provider,
             event_ingest_token,
             webhook_signing_master_key,

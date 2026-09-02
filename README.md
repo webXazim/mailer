@@ -57,7 +57,7 @@ chmod 600 .env
 sh manage deploy
 ```
 
-`production-init` creates `.env` with five independent random local secrets and
+`production-init` creates `.env` with four independent random local secrets and
 refuses to overwrite an existing file. Enter the tunnel token, separate API and
 worker AWS credentials, SES/SQS event configuration, and R2 bucket credentials
 at the **top** of the file. The lower section contains runtime defaults. If you
@@ -76,6 +76,24 @@ Additional values at the top of `.env`:
   `AUTH_EMAIL_DELIVERY_ENABLED=true`.
 - `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY`: create a Cloudflare Turnstile
   widget for `mailer.crescentsphere.com`. The backend validates every public signup.
+- `CLOUDFLARE_OAUTH_CLIENT_ID` and `CLOUDFLARE_OAUTH_CLIENT_SECRET`: enable the
+  **Add records with Cloudflare** flow. Leave both empty until the OAuth client is ready.
+
+For one-click DNS publishing, create a public server-side OAuth client in Cloudflare
+under **Manage Account > OAuth clients**. Use the Authorization Code flow, response
+type `code`, token authentication `client_secret_basic`, and required scopes
+`Zone Read` and `DNS Write`. Register this exact redirect URL:
+
+```text
+https://mailer.crescentsphere.com/api/v1/dns-automation/cloudflare/callback
+```
+
+Set the client URL to `https://mailer.crescentsphere.com`, complete Cloudflare's
+publisher-domain TXT verification, promote the client to public, and place the client
+ID and secret at the top of `.env`. Mailer stores only a hashed, ten-minute OAuth
+state. It uses the granted access token to add missing records without overwriting
+conflicts and revokes that token immediately after the attempt. Manual DNS instructions
+remain available for DNS providers that do not offer a supported authorization flow.
 
 After deployment, create an account. A workspace is created
 automatically and starts in **Test**:

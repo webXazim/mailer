@@ -1,6 +1,7 @@
 mod activity;
 mod api_keys;
 mod auth;
+mod dns_automation;
 mod domains;
 mod emails;
 mod ses_events;
@@ -40,6 +41,9 @@ pub(crate) struct AppState {
     auth_email_delivery_enabled: bool,
     turnstile_site_key: Option<String>,
     turnstile_secret_key: Option<String>,
+    cloudflare_oauth_client_id: Option<String>,
+    cloudflare_oauth_client_secret: Option<String>,
+    cloudflare_oauth_scopes: String,
     event_ingest_token: String,
     webhook_signing_master_key: String,
     object_store: Option<storage::ObjectStore>,
@@ -99,6 +103,9 @@ async fn main() -> anyhow::Result<()> {
         auth_email_delivery_enabled: settings.auth_email_delivery_enabled,
         turnstile_site_key: settings.turnstile_site_key.clone(),
         turnstile_secret_key: settings.turnstile_secret_key.clone(),
+        cloudflare_oauth_client_id: settings.cloudflare_oauth_client_id.clone(),
+        cloudflare_oauth_client_secret: settings.cloudflare_oauth_client_secret.clone(),
+        cloudflare_oauth_scopes: settings.cloudflare_oauth_scopes.clone(),
         event_ingest_token: settings.event_ingest_token.clone(),
         webhook_signing_master_key: settings.webhook_signing_master_key.clone(),
         object_store,
@@ -115,6 +122,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(auth::routes())
         .merge(api_keys::routes())
         .merge(domains::routes())
+        .merge(dns_automation::routes())
         .merge(emails::routes())
         .merge(ses_events::routes())
         .merge(webhooks::routes())

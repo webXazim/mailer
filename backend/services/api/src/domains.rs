@@ -30,6 +30,7 @@ struct DomainView {
     verified_at: Option<String>,
     created_at: String,
     records: Vec<RecordView>,
+    dns_automation: Vec<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -245,6 +246,13 @@ async fn add_domain(
                 last_checked_at: None,
             })
             .collect(),
+        dns_automation: if state.cloudflare_oauth_client_id.is_some()
+            && state.cloudflare_oauth_client_secret.is_some()
+        {
+            vec!["cloudflare"]
+        } else {
+            Vec::new()
+        },
     };
     (StatusCode::CREATED, Json(json!({"data": view}))).into_response()
 }
@@ -470,6 +478,13 @@ async fn domain_view(
                     .map(|value| value.to_rfc3339()),
             })
             .collect(),
+        dns_automation: if state.cloudflare_oauth_client_id.is_some()
+            && state.cloudflare_oauth_client_secret.is_some()
+        {
+            vec!["cloudflare"]
+        } else {
+            Vec::new()
+        },
     })
 }
 

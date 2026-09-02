@@ -1,8 +1,8 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Mail } from 'lucide-react'
+import { Check, Mail, ShieldCheck, Zap } from 'lucide-react'
 import { api } from '../../lib/api/client'
-import { Envelope, Session, useAction, useResource, Panel, Field, ErrorNotice, Submit } from './shared'
+import { Envelope, Session, useAction, useResource, Field, ErrorNotice, Submit } from './shared'
 
 type AuthConfig = { passwordRecovery: boolean; turnstileSiteKey?: string }
 type TurnstileApi = { render: (element: HTMLElement, options: Record<string, unknown>) => string; remove: (id: string) => void }
@@ -22,7 +22,7 @@ function Turnstile({ siteKey, token }: { siteKey?: string; token: (value: string
     script.addEventListener('load', render); render()
     return () => { cancelled = true; script?.removeEventListener('load', render); if (widget) window.turnstile?.remove(widget) }
   }, [siteKey, token])
-  return siteKey ? <div ref={container} aria-label="Security check" /> : null
+  return siteKey ? <div className="mailer-auth__turnstile"><div ref={container} aria-label="Security check" /></div> : null
 }
 
 export function Authentication({ signedIn }: { signedIn: (session: Session) => void }) {
@@ -53,12 +53,29 @@ export function Authentication({ signedIn }: { signedIn: (session: Session) => v
       const response = await api.post<Envelope<Session>>('/v1/auth/login', { email: value('email'), password: value('password'), remember: true }); signedIn(response.data); navigate('/', { replace: true })
     })
   }
-  if (mode === 'verify') return <main className="live-auth"><div className="live-auth__brand"><Mail size={26} /><strong>CrescentSphere Mailer</strong></div><Panel title="Verify your email"><ErrorNotice error={action.error} />{action.busy && <p role="status">Verifying your account…</p>}{action.error && <button className="text-link" onClick={() => navigate('/login')}>Back to sign in</button>}</Panel></main>
-  return <main className="live-auth"><div className="live-auth__brand"><Mail size={26} /><strong>CrescentSphere Mailer</strong><p>Developer email, under your control.</p></div><Panel title={mode === 'signup' ? 'Create your account' : mode === 'forgot' ? 'Recover your account' : mode === 'resend' ? 'Resend verification' : mode === 'reset' ? 'Set a new password' : 'Sign in'}><form key={mode} className="form-stack" onSubmit={submit}>
-    {mode === 'signup' && <div className="form-two"><Field label="First name"><input name="first" autoComplete="given-name" required maxLength={80} /></Field><Field label="Last name"><input name="last" autoComplete="family-name" required maxLength={80} /></Field></div>}
-    {mode !== 'reset' && <Field label="Email address"><input name="email" type="email" autoComplete="email" required maxLength={254} /></Field>}
-    {!['forgot', 'resend'].includes(mode) && <Field label="Password"><input name="password" type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={mode === 'login' ? 1 : 12} maxLength={256} required /></Field>}
-    {mode === 'signup' && <><label className="checkbox-field"><input type="checkbox" required />I will send only permission-based transactional email and handle bounces and complaints.</label><Turnstile siteKey={config.result?.data.turnstileSiteKey} token={setTurnstileToken} /></>}
-    <ErrorNotice error={action.error || config.error} />{notice && <p className="live-notice" role="status">{notice}</p>}<Submit busy={action.busy}>{mode === 'signup' ? 'Create account' : mode === 'forgot' ? 'Send reset instructions' : mode === 'resend' ? 'Resend verification link' : mode === 'reset' ? 'Update password' : 'Sign in'}</Submit>
-  </form><div className="live-actions"><button className="text-link" onClick={() => navigate(mode === 'login' ? '/signup' : '/login')}>{mode === 'login' ? 'Create account' : 'Back to sign in'}</button>{mode === 'login' && <><button className="text-link" onClick={() => navigate('/forgot-password')}>Forgot password?</button><button className="text-link" onClick={() => navigate('/resend-verification')}>Resend verification</button></>}</div></Panel><p className="muted">Public beta. New workspaces start in safe test mode.</p></main>
+  const title = mode === 'signup' ? 'Create your account' : mode === 'forgot' ? 'Reset your password' : mode === 'resend' ? 'Resend verification' : mode === 'reset' ? 'Choose a new password' : 'Welcome back'
+  const description = mode === 'signup' ? 'Start testing your email integration in a few minutes.' : mode === 'forgot' ? 'We will send a secure reset link to your inbox.' : mode === 'resend' ? 'Enter the address you used when creating your account.' : mode === 'reset' ? 'Use at least 12 characters for your new password.' : 'Sign in to manage your email infrastructure.'
+  return <main className="mailer-auth">
+    <aside className="mailer-auth__aside">
+      <div className="mailer-auth__brand"><span><Mail size={19} /></span>CrescentSphere Mailer</div>
+      <div className="mailer-auth__pitch"><p className="eyebrow">Developer email infrastructure</p><h1>Ship transactional email with confidence.</h1><p>One focused console for sending, delivery events, domains, suppressions, and webhooks.</p><ul><li><Check size={15} />Safe test mode with simulated delivery</li><li><Check size={15} />SES-backed production sending</li><li><Check size={15} />Signed webhooks and delivery history</li></ul></div>
+      <p className="mailer-auth__aside-footer"><ShieldCheck size={14} />Protected by email verification and Cloudflare</p>
+    </aside>
+    <section className="mailer-auth__main">
+      <div className="mailer-auth__card">
+        <header><span className="mailer-auth__icon">{mode === 'signup' ? <Zap size={19} /> : <Mail size={19} />}</span><h2>{mode === 'verify' ? 'Verify your email' : title}</h2><p>{mode === 'verify' ? 'We are confirming your secure verification link.' : description}</p></header>
+        {mode === 'verify' ? <div className="mailer-auth__status"><ErrorNotice error={action.error} />{action.busy && <p role="status">Verifying your account…</p>}{action.error && <button className="text-link" onClick={() => navigate('/login')}>Back to sign in</button>}</div> : <>
+          <form key={mode} className="form-stack mailer-auth__form" onSubmit={submit}>
+            {mode === 'signup' && <div className="form-two"><Field label="First name"><input name="first" autoComplete="given-name" placeholder="Alex" required maxLength={80} /></Field><Field label="Last name"><input name="last" autoComplete="family-name" placeholder="Morgan" required maxLength={80} /></Field></div>}
+            {mode !== 'reset' && <Field label="Email address"><input name="email" type="email" autoComplete="email" placeholder="you@company.com" required maxLength={254} /></Field>}
+            {!['forgot', 'resend'].includes(mode) && <Field label="Password"><input name="password" type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} placeholder={mode === 'login' ? 'Enter your password' : 'At least 12 characters'} minLength={mode === 'login' ? 1 : 12} maxLength={256} required />{mode === 'signup' && <small>Use 12 or more characters. A passphrase works well.</small>}</Field>}
+            {mode === 'signup' && <><label className="checkbox-field mailer-auth__consent"><input type="checkbox" required /><span>I will send only permission-based transactional email and handle bounces and complaints.</span></label><Turnstile siteKey={config.result?.data.turnstileSiteKey} token={setTurnstileToken} /></>}
+            <ErrorNotice error={action.error || config.error} />{notice && <p className="live-notice" role="status">{notice}</p>}<Submit busy={action.busy}>{mode === 'signup' ? 'Create account' : mode === 'forgot' ? 'Send reset instructions' : mode === 'resend' ? 'Resend verification link' : mode === 'reset' ? 'Update password' : 'Sign in'}</Submit>
+          </form>
+          <div className="mailer-auth__links"><button className="text-link" onClick={() => navigate(mode === 'login' ? '/signup' : '/login')}>{mode === 'login' ? 'Create a free account' : 'Back to sign in'}</button>{mode === 'login' && <><button className="text-link" onClick={() => navigate('/forgot-password')}>Forgot password?</button><button className="text-link" onClick={() => navigate('/resend-verification')}>Resend verification</button></>}</div>
+        </>}
+      </div>
+      <p className="mailer-auth__footnote">Public beta · New workspaces begin in safe test mode</p>
+    </section>
+  </main>
 }

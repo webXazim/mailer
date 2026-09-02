@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../../lib/api/client'
 import { Badge, date, Delivery, Domain, Email, Endpoint, Envelope, Environment, ErrorNotice, Field, Key, Panel, Refresh, Secret, Submit, Suppression, useAction, useResource } from './shared'
 
@@ -16,10 +16,37 @@ export function Emails({ environment }: { environment: Environment }) {
 export function Domains({ admin }: { admin: boolean }) {
   const list = useResource<Domain[]>('/v1/domains'), action = useAction(), [selected, setSelected] = useState<string | null>(null)
   const detail = useResource<Domain>(selected ? `/v1/domains/${selected}` : null)
-  return <><Panel title="Sending domains" action={<Refresh reload={list.reload} />}><p>Add a domain you control, publish the DNS records, then verify. Use MX priority <strong>10</strong>; publish SPF/DMARC as TXT. DKIM CNAMEs must be DNS-only in Cloudflare.</p>
+  const pending = useRef<string[]>([]), checking = useRef(false), [autoChecking, setAutoChecking] = useState(false), [autoError, setAutoError] = useState('')
+  pending.current = list.result?.data.filter(domain => domain.status === 'pending').map(domain => domain.id) ?? []
+  useEffect(() => {
+    if (!admin) return
+    let cancelled = false
+    const verifyPending = async () => {
+      if (document.hidden || checking.current || pending.current.length === 0) return
+      checking.current = true; setAutoChecking(true); setAutoError('')
+      try {
+        for (const id of pending.current) await api.post(`/v1/domains/${id}/verify`, {})
+        if (!cancelled) { list.reload(); if (selected) detail.reload() }
+      } catch (error) {
+        if (!cancelled) setAutoError(error instanceof Error ? error.message : 'Automatic verification will retry.')
+      } finally {
+        checking.current = false
+        if (!cancelled) setAutoChecking(false)
+      }
+    }
+    const first = window.setTimeout(() => void verifyPending(), 1500)
+    const timer = window.setInterval(() => void verifyPending(), 15000)
+    const visible = () => { if (!document.hidden) void verifyPending() }
+    document.addEventListener('visibilitychange', visible)
+    return () => { cancelled = true; window.clearTimeout(first); window.clearInterval(timer); document.removeEventListener('visibilitychange', visible) }
+  }, [admin, selected, list.reload, detail.reload])
+  const pendingCount = list.result?.data.filter(domain => domain.status === 'pending').length ?? 0
+  return <><Panel title="Sending domains" action={<Refresh reload={list.reload} />}><p>Add a domain you control and publish the DNS records. Pending domains are checked automatically every 15 seconds while this page is open. Use MX priority <strong>10</strong>; publish SPF/DMARC as TXT. DKIM CNAMEs must be DNS-only in Cloudflare.</p>
+    {pendingCount > 0 && <p className="live-notice" role="status">{autoChecking ? 'Checking DNS and SES now…' : `${pendingCount} pending ${pendingCount === 1 ? 'domain' : 'domains'} · Next check runs automatically`}</p>}
+    <ErrorNotice error={autoError} />
     {admin && <form className="live-inline-form" onSubmit={e => { e.preventDefault(); const form = e.currentTarget, domain = String(new FormData(form).get('domain')); action.run(async () => { const value = await api.post<Envelope<Domain>>('/v1/domains', { domain }); form.reset(); list.reload(); setSelected(value.data.id) }) }}><Field label="Domain"><input name="domain" placeholder="mail.example.com" required /></Field><Submit busy={action.busy}>Add domain</Submit></form>}
     <ErrorNotice error={action.error || list.error} />{list.loading && <p>Loading domains…</p>}<div className="table-wrap"><table className="data-table"><thead><tr><th>Domain</th><th>Status</th><th>Actions</th></tr></thead><tbody>{list.result?.data.map(domain => <tr key={domain.id}><td>{domain.domain}</td><td><Badge value={domain.status} /></td><td className="live-actions"><button className="text-link" onClick={() => setSelected(domain.id)}>DNS records</button>{admin && <><button className="text-link" disabled={action.busy} onClick={() => action.run(async () => { await api.post(`/v1/domains/${domain.id}/verify`, {}); list.reload(); detail.reload() })}>Verify</button><button className="text-link" disabled={action.busy} onClick={() => { if (confirm(`Disable ${domain.domain}? Production sends from it will fail.`)) action.run(async () => { await api.delete(`/v1/domains/${domain.id}`); list.reload(); setSelected(null) }) }}>Disable</button></>}</td></tr>)}</tbody></table></div>{!list.loading && !list.result?.data.length && <p>No sending domains. Test sends can use sender@sandbox.mailer.invalid without DNS setup.</p>}</Panel>
-    {selected && <Panel title="DNS setup" action={<button className="text-link" onClick={() => setSelected(null)}>Close</button>}><ErrorNotice error={detail.error} />{detail.loading && <p>Loading DNS records…</p>}<div className="table-wrap"><table className="data-table"><thead><tr><th>Type</th><th>Name</th><th>Value</th><th>Status</th></tr></thead><tbody>{detail.result?.data.records.map(record => <tr key={record.name}><td>{['SPF', 'DMARC'].includes(record.record_type) ? `TXT (${record.record_type})` : record.record_type}</td><td><code>{record.name}</code></td><td><code>{record.value}</code></td><td><Badge value={record.status} /></td></tr>)}</tbody></table></div></Panel>}
+    {selected && <Panel title="DNS setup" action={<button className="text-link" onClick={() => setSelected(null)}>Close</button>}><ErrorNotice error={detail.error} />{detail.loading && <p>Loading DNS records…</p>}<div className="table-wrap"><table className="data-table"><thead><tr><th>Type</th><th>Name</th><th>Value</th><th>Purpose</th><th>Status</th></tr></thead><tbody>{detail.result?.data.records.map(record => <tr key={record.name}><td>{['SPF', 'DMARC'].includes(record.record_type) ? `TXT (${record.record_type})` : record.record_type}</td><td><code>{record.name}</code></td><td><code>{record.value}</code></td><td>{record.required ? 'Required' : 'Recommended'}</td><td><Badge value={record.status} /></td></tr>)}</tbody></table></div></Panel>}
   </>
 }
 const scopes = ['emails:send', 'emails:read', 'domains:read', 'domains:write', 'webhooks:manage', 'suppressions:manage', 'workspace:read']

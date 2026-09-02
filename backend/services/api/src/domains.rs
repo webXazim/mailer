@@ -36,6 +36,7 @@ struct RecordView {
     record_type: String,
     name: String,
     value: String,
+    required: bool,
     status: String,
     last_checked_at: Option<String>,
 }
@@ -234,10 +235,11 @@ async fn add_domain(
             .to_rfc3339(),
         records: records
             .into_iter()
-            .map(|(record_type, name, value, _)| RecordView {
+            .map(|(record_type, name, value, required)| RecordView {
                 record_type,
                 name,
                 value,
+                required,
                 status: "pending".into(),
                 last_checked_at: None,
             })
@@ -391,7 +393,7 @@ async fn domain_view(
     row: sqlx::postgres::PgRow,
 ) -> Result<DomainView, sqlx::Error> {
     let id: Uuid = row.get("id");
-    let records = sqlx::query("SELECT record_type, name, value, status, last_checked_at FROM domain_dns_records WHERE domain_id = $1 ORDER BY record_type, name").bind(id).fetch_all(&state.db).await?;
+    let records = sqlx::query("SELECT record_type, name, value, required_for_sending, status, last_checked_at FROM domain_dns_records WHERE domain_id = $1 ORDER BY record_type, name").bind(id).fetch_all(&state.db).await?;
     Ok(DomainView {
         id,
         domain: row.get("name"),
@@ -408,6 +410,7 @@ async fn domain_view(
                 record_type: record.get("record_type"),
                 name: record.get("name"),
                 value: record.get("value"),
+                required: record.get("required_for_sending"),
                 status: record.get("status"),
                 last_checked_at: record
                     .get::<Option<chrono::DateTime<chrono::Utc>>, _>("last_checked_at")

@@ -108,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
         workspace_monthly_email_limit: settings.workspace_monthly_email_limit,
         workspace_concurrent_email_limit: settings.workspace_concurrent_email_limit,
     };
+    let _domain_verifier = tokio::spawn(domains::run_verifier(state.clone()));
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))

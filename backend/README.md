@@ -36,8 +36,7 @@ revoked or expired. The verifier enforces workspace ownership, permission scope,
 Domain onboarding is available under `/v1/domains`. In production,
 `DOMAIN_PROVIDER=ses` is required. Adding a domain creates an SES identity,
 configures a custom MAIL FROM subdomain, and returns the required DKIM, SPF,
-MX, DMARC, and unique ownership TXT records. Existing provider identities are reconciled after interrupted provisioning; disabling a Mailer domain preserves the SES identity so other applications are not disrupted. Verification polls SES and checks DNS; only domains
-with verified SES sending status and required DNS records become `verified`.
+MX, DMARC, and unique ownership TXT records. Existing provider identities are reconciled after interrupted provisioning; disabling a Mailer domain preserves the SES identity so other applications are not disrupted. The API checks every pending domain in the background every 30 seconds. Public DNS lookup is independent of the user's DNS provider; only domains with verified SES sending status and required DNS records become `verified`.
 
 The developer submission endpoint is `POST /v1/emails`. It requires an API
 key with `emails:send` (or an owner/admin console session), a matching test/production environment, and an

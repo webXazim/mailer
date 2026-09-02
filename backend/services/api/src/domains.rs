@@ -10,6 +10,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::Row;
+use std::time::Duration;
 use trust_dns_resolver::{
     config::{ResolverConfig, ResolverOpts},
     TokioAsyncResolver,
@@ -337,26 +338,43 @@ async fn verify_domain(
         }
     };
     let name: String = row.get("name");
-    let Some(ses) = &state.ses else {
-        return error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "domain_provider_unavailable",
-            "Domain verification is not configured in this environment",
-        );
-    };
-    let provider_verified = match ses.get_email_identity().email_identity(&name).send().await {
-        Ok(value) => value.verified_for_sending_status(),
+    let (provider_verified, required_dns_verified) = match refresh_verification(&state, id, &name)
+        .await
+    {
+        Ok(result) => result,
         Err(provider_error) => {
-            tracing::error!(error = %provider_error, domain = %name, "SES identity status failed");
+            tracing::error!(error = %provider_error, domain = %name, "domain verification failed");
             return error(
                 StatusCode::BAD_GATEWAY,
                 "provider_error",
-                "Unable to check the sending identity",
+                "Unable to check domain verification",
             );
         }
     };
+    let verified = provider_verified && required_dns_verified;
+    Json(json!({"data": {"domain": name, "status": if verified { "verified" } else { "pending" }, "verified": verified, "providerVerified": provider_verified, "requiredDnsVerified": required_dns_verified}})).into_response()
+}
+
+async fn refresh_verification(
+    state: &AppState,
+    id: Uuid,
+    name: &str,
+) -> anyhow::Result<(bool, bool)> {
+    let ses = state
+        .ses
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("domain verification provider is unavailable"))?;
+    let provider_verified = ses
+        .get_email_identity()
+        .email_identity(name)
+        .send()
+        .await?
+        .verified_for_sending_status();
     let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
-    let expected = match sqlx::query("SELECT id, record_type, name, value, required_for_sending FROM domain_dns_records WHERE domain_id = $1").bind(id).fetch_all(&state.db).await { Ok(value) => value, Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to verify DNS records") };
+    let expected = sqlx::query("SELECT id, record_type, name, value, required_for_sending FROM domain_dns_records WHERE domain_id = $1")
+        .bind(id)
+        .fetch_all(&state.db)
+        .await?;
     let mut required_dns_verified = true;
     for record in expected {
         let record_id: Uuid = record.get("id");
@@ -369,13 +387,13 @@ async fn verify_domain(
         if required && !found {
             required_dns_verified = false;
         }
-        let _ = sqlx::query(
+        sqlx::query(
             "UPDATE domain_dns_records SET status = $1, last_checked_at = now() WHERE id = $2",
         )
         .bind(status)
         .bind(record_id)
         .execute(&state.db)
-        .await;
+        .await?;
     }
     let verified = provider_verified && required_dns_verified;
     let domain_status = if verified { "verified" } else { "pending" };
@@ -384,8 +402,43 @@ async fn verify_domain(
     } else {
         "pending"
     };
-    if sqlx::query("UPDATE domains SET status = $1, provider_status = $2, verified_at = CASE WHEN $1 = 'verified' THEN now() ELSE NULL END, updated_at = now() WHERE id = $3").bind(domain_status).bind(provider_status).bind(id).execute(&state.db).await.is_err() { return error(StatusCode::SERVICE_UNAVAILABLE,"database_unavailable","Unable to store verification result"); }
-    Json(json!({"data": {"domain": name, "status": domain_status, "verified": verified, "providerVerified": provider_verified, "requiredDnsVerified": required_dns_verified}})).into_response()
+    sqlx::query("UPDATE domains SET status = $1, provider_status = $2, verified_at = CASE WHEN $1 = 'verified' THEN COALESCE(verified_at,now()) ELSE NULL END, updated_at = now() WHERE id = $3")
+        .bind(domain_status)
+        .bind(provider_status)
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    Ok((provider_verified, required_dns_verified))
+}
+
+pub(crate) async fn run_verifier(state: AppState) {
+    if state.ses.is_none() {
+        return;
+    }
+    let mut timer = tokio::time::interval(Duration::from_secs(30));
+    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        timer.tick().await;
+        let rows = match sqlx::query(
+            "SELECT id,name FROM domains WHERE status='pending' ORDER BY updated_at LIMIT 100",
+        )
+        .fetch_all(&state.db)
+        .await
+        {
+            Ok(rows) => rows,
+            Err(background_error) => {
+                tracing::warn!(error = %background_error, "unable to load pending domains for verification");
+                continue;
+            }
+        };
+        for row in rows {
+            let id: Uuid = row.get("id");
+            let name: String = row.get("name");
+            if let Err(background_error) = refresh_verification(&state, id, &name).await {
+                tracing::warn!(error = %background_error, domain = %name, "automatic domain verification failed");
+            }
+        }
+    }
 }
 
 async fn domain_view(

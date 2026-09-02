@@ -478,10 +478,9 @@ async fn verify_turnstile(
     let expected_host = url::Url::parse(&state.console_origin)
         .ok()
         .and_then(|url| url.host_str().map(str::to_owned));
-    if !result.success
-        || result.action.as_deref() != Some("signup")
-        || result.hostname != expected_host
-    {
+    let production_context_matches =
+        result.action.as_deref() == Some("signup") && result.hostname == expected_host;
+    if !result.success || (state.environment == "production" && !production_context_matches) {
         return Err(error(
             StatusCode::BAD_REQUEST,
             "bot_verification_failed",

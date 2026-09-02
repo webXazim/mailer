@@ -30,6 +30,8 @@ def main():
     values = {key: secrets.token_hex(32) for key in ['POSTGRES_PASSWORD', 'NATS_PASSWORD', 'EVENT_INGEST_TOKEN', 'WEBHOOK_SIGNING_MASTER_KEY']}
     values.update(APP_ENV='development', DOMAIN_PROVIDER='disabled', OBJECT_STORAGE_PROVIDER='disabled',
                   ACCOUNT_EMAIL_FROM='account@integration.invalid', SES_CONFIGURATION_SET='',
+                  TURNSTILE_SITE_KEY='1x00000000000000000000AA',
+                  TURNSTILE_SECRET_KEY='1x0000000000000000000000000000000AA',
                   SES_EVENTS_QUEUE_URL='', SES_EVENTS_TOPIC_ARN='', CLOUDFLARE_TUNNEL_TOKEN='unused',
                   API_AWS_ACCESS_KEY_ID='unused', API_AWS_SECRET_ACCESS_KEY='unused',
                   WORKER_AWS_ACCESS_KEY_ID='unused', WORKER_AWS_SECRET_ACCESS_KEY='unused', FRONTEND_PORT='0',
@@ -77,7 +79,7 @@ def main():
 
     def signup(email):
         response = request('POST', '/v1/auth/signup', {'email': email, 'password': PASSWORD, 'first_name': 'Integration',
-                           'last_name': 'Owner'})
+                           'last_name': 'Owner', 'turnstile_token': 'XXXX.DUMMY.TOKEN.XXXX'})
         assert response[0] in (200, 201), (response[0], response[1])
         assert response[1]['data']['verificationRequired'] and response[2] is None
         expect(403, request('POST', '/v1/auth/login', {'email': email, 'password': PASSWORD}))

@@ -4,7 +4,8 @@ import { Check, Mail, ShieldCheck, Zap } from 'lucide-react'
 import { api } from '../../lib/api/client'
 import { Envelope, Session, useAction, useResource, Field, ErrorNotice, Submit } from './shared'
 
-type AuthConfig = { passwordRecovery: boolean; turnstileSiteKey?: string }
+type AuthConfig = { emailVerification: boolean; passwordRecovery: boolean; turnstileSiteKey?: string }
+type SignupResult = { verificationRequired: boolean; email: string; session?: Session }
 type TurnstileApi = { render: (element: HTMLElement, options: Record<string, unknown>) => string; remove: (id: string) => void }
 declare global { interface Window { turnstile?: TurnstileApi } }
 
@@ -47,7 +48,8 @@ export function Authentication({ signedIn }: { signedIn: (session: Session) => v
       if (mode === 'reset') { await api.post('/v1/auth/password-reset/complete', { token: new URLSearchParams(location.search).get('token') ?? '', password: value('password') }); window.dispatchEvent(new Event('mailer:session-expired')); setNotice('Password updated. You can now sign in.'); return }
       if (mode === 'signup') {
         if (config.result?.data.turnstileSiteKey && !turnstileToken) throw new Error('Complete the security check first.')
-        await api.post('/v1/auth/signup', { email: value('email'), password: value('password'), first_name: value('first'), last_name: value('last'), turnstile_token: turnstileToken })
+        const response = await api.post<Envelope<SignupResult>>('/v1/auth/signup', { email: value('email'), password: value('password'), first_name: value('first'), last_name: value('last'), turnstile_token: turnstileToken })
+        if (response.data.session) { signedIn(response.data.session); navigate('/', { replace: true }); return }
         setNotice('Account created. Check your inbox and spam folder for the verification link.'); return
       }
       const response = await api.post<Envelope<Session>>('/v1/auth/login', { email: value('email'), password: value('password'), remember: true }); signedIn(response.data); navigate('/', { replace: true })
@@ -59,7 +61,7 @@ export function Authentication({ signedIn }: { signedIn: (session: Session) => v
     <aside className="mailer-auth__aside">
       <div className="mailer-auth__brand"><span><Mail size={19} /></span>CrescentSphere Mailer</div>
       <div className="mailer-auth__pitch"><p className="eyebrow">Developer email infrastructure</p><h1>Ship transactional email with confidence.</h1><p>One focused console for sending, delivery events, domains, suppressions, and webhooks.</p><ul><li><Check size={15} />Safe test mode with simulated delivery</li><li><Check size={15} />SES-backed production sending</li><li><Check size={15} />Signed webhooks and delivery history</li></ul></div>
-      <p className="mailer-auth__aside-footer"><ShieldCheck size={14} />Protected by email verification and Cloudflare</p>
+      <p className="mailer-auth__aside-footer"><ShieldCheck size={14} />Protected by Cloudflare and secure sessions</p>
     </aside>
     <section className="mailer-auth__main">
       <div className="mailer-auth__card">
@@ -72,7 +74,7 @@ export function Authentication({ signedIn }: { signedIn: (session: Session) => v
             {mode === 'signup' && <><label className="checkbox-field mailer-auth__consent"><input type="checkbox" required /><span>I will send only permission-based transactional email and handle bounces and complaints.</span></label><Turnstile siteKey={config.result?.data.turnstileSiteKey} token={setTurnstileToken} /></>}
             <ErrorNotice error={action.error || config.error} />{notice && <p className="live-notice" role="status">{notice}</p>}<Submit busy={action.busy}>{mode === 'signup' ? 'Create account' : mode === 'forgot' ? 'Send reset instructions' : mode === 'resend' ? 'Resend verification link' : mode === 'reset' ? 'Update password' : 'Sign in'}</Submit>
           </form>
-          <div className="mailer-auth__links"><button className="text-link" onClick={() => navigate(mode === 'login' ? '/signup' : '/login')}>{mode === 'login' ? 'Create a free account' : 'Back to sign in'}</button>{mode === 'login' && <><button className="text-link" onClick={() => navigate('/forgot-password')}>Forgot password?</button><button className="text-link" onClick={() => navigate('/resend-verification')}>Resend verification</button></>}</div>
+          <div className="mailer-auth__links"><button className="text-link" onClick={() => navigate(mode === 'login' ? '/signup' : '/login')}>{mode === 'login' ? 'Create a free account' : 'Back to sign in'}</button>{mode === 'login' && <>{config.result?.data.passwordRecovery && <button className="text-link" onClick={() => navigate('/forgot-password')}>Forgot password?</button>}{config.result?.data.emailVerification && <button className="text-link" onClick={() => navigate('/resend-verification')}>Resend verification</button>}</>}</div>
         </>}
       </div>
       <p className="mailer-auth__footnote">Public beta · New workspaces begin in safe test mode</p>

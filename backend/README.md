@@ -124,7 +124,7 @@ separate DLQ. Subscribe the queue to the topic with raw message delivery
 disabled, permit only that topic to call `sqs:SendMessage`, and configure the
 SES configuration set to publish delivery, bounce, complaint, reject,
 rendering-failure, open, and click events to the topic. Enter the final queue
-URL and exact topic ARN as `SES_EVENTS_QUEUE_URL` and `SES_EVENTS_TOPIC_ARN`. Set `SES_CONFIGURATION_SET` to this configuration-set name and ensure the worker IAM policy includes its ARN. Set `ACCOUNT_EMAIL_FROM` to an SES-verified sender for password-reset emails.
+URL and exact topic ARN as `SES_EVENTS_QUEUE_URL` and `SES_EVENTS_TOPIC_ARN`. Set `SES_CONFIGURATION_SET` to this configuration-set name and ensure the worker IAM policy includes its ARN. Leave `AUTH_EMAIL_DELIVERY_ENABLED=false` until account-email delivery is ready. When enabling it, set `ACCOUNT_EMAIL_FROM` to an SES-verified sender for verification and password-reset emails.
 
 Provide the `API_AWS_*` and `WORKER_AWS_*` credentials only through the VPS
 secret environment. Use separate IAM users: the API identity manages SES
@@ -224,8 +224,9 @@ configuration-set placeholders and review the effective permissions in AWS.
 ## Public beta API contract
 
 - `POST /v1/auth/signup` accepts `email`, `password`, `first_name`, `last_name`, and
-  `turnstile_token`. Production validates Turnstile server-side and queues a one-time
-  email-verification link. The workspace name is created automatically.
+  `turnstile_token`. Production validates Turnstile server-side. With account email delivery
+  disabled it creates a session immediately; when enabled it queues a one-time verification
+  link. The workspace name is created automatically.
 - New workspaces can create test keys and simulate delivery. Production API keys and
   production submissions require operator approval through `sh manage approve-workspace`.
 - `GET /v1/emails?limit=25&offset=0&environment=test` lists messages. Keys only see

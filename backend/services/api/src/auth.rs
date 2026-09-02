@@ -161,7 +161,7 @@ async fn signup(
             )
         }
     };
-    let token = generate_token();
+    let session_token = (!state.auth_email_delivery_enabled).then(generate_token);
     let slug = format!(
         "{}-{}",
         slugify(&workspace_name),
@@ -178,11 +178,12 @@ async fn signup(
         }
     };
     let user_id = match sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO users (email, password_hash, display_name) VALUES ($1, $2, $3) RETURNING id",
+        "INSERT INTO users (email, password_hash, display_name, email_verified_at) VALUES ($1, $2, $3, CASE WHEN $4 THEN NULL ELSE now() END) RETURNING id",
     )
     .bind(&email)
     .bind(password_hash)
     .bind(&display_name)
+    .bind(state.auth_email_delivery_enabled)
     .fetch_one(&mut *tx)
     .await
     {
@@ -235,15 +236,24 @@ async fn signup(
             "Unable to create workspace",
         );
     }
-    if queue_verification(&state, &mut tx, user_id, &email, &token)
-        .await
-        .is_err()
-    {
-        return error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal_error",
-            "Unable to queue verification email",
-        );
+    if state.auth_email_delivery_enabled {
+        let verification_token = generate_token();
+        if queue_verification(&state, &mut tx, user_id, &email, &verification_token)
+            .await
+            .is_err()
+        {
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "Unable to queue verification email",
+            );
+        }
+    } else if let Some(token) = session_token.as_deref() {
+        if sqlx::query("INSERT INTO sessions (user_id,token_hash,expires_at) VALUES ($1,$2,now()+make_interval(days=>$3::int))")
+            .bind(user_id).bind(hash_token(token)).bind(SESSION_DAYS).execute(&mut *tx).await.is_err()
+        {
+            return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to create account session");
+        }
     }
     if sqlx::query("INSERT INTO audit_events (workspace_id, actor_user_id, action) VALUES ($1, $2, 'account.created')")
         .bind(workspace_id).bind(user_id).execute(&mut *tx).await.is_err() {
@@ -256,7 +266,17 @@ async fn signup(
             "Unable to create account",
         );
     }
-    Json(json!({"data": {"verificationRequired": true, "email": email}})).into_response()
+    let Some(session_token) = session_token else {
+        return Json(json!({"data": {"verificationRequired": true, "email": email}}))
+            .into_response();
+    };
+    match load_context(&state, &session_token).await {
+        Ok(context) => with_cookie(
+            Json(json!({"data": {"verificationRequired": false, "email": email, "session": context}})).into_response(),
+            cookie(&session_token, true, false, state.environment == "production"),
+        ),
+        Err(_) => error(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "Account created; sign in to continue"),
+    }
 }
 
 async fn queue_verification(
@@ -355,6 +375,9 @@ async fn resend_verification(
     headers: HeaderMap,
     Json(input): Json<ResendVerificationRequest>,
 ) -> Response {
+    if !state.auth_email_delivery_enabled {
+        return Json(json!({"data":{"accepted":true}})).into_response();
+    }
     let ip = client_ip(peer.ip(), &headers, state.trust_proxy_headers);
     if enforce_auth_limit(&state, &format!("verify-resend:ip:{ip}"), 5)
         .await
@@ -559,9 +582,10 @@ async fn login(
             "Email or password is incorrect",
         );
     }
-    if row
-        .get::<Option<chrono::DateTime<chrono::Utc>>, _>("email_verified_at")
-        .is_none()
+    if state.auth_email_delivery_enabled
+        && row
+            .get::<Option<chrono::DateTime<chrono::Utc>>, _>("email_verified_at")
+            .is_none()
     {
         return error(
             StatusCode::FORBIDDEN,
@@ -654,7 +678,7 @@ async fn request_reset(
     headers: HeaderMap,
     Json(input): Json<ResetRequest>,
 ) -> Response {
-    if state.account_email_from.is_none() {
+    if !state.auth_email_delivery_enabled || state.account_email_from.is_none() {
         return error(
             StatusCode::SERVICE_UNAVAILABLE,
             "recovery_unconfigured",
@@ -890,7 +914,7 @@ fn with_cookie(mut response: Response, value: String) -> Response {
 }
 async fn auth_config(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(
-        json!({"data":{"passwordRecovery":state.account_email_from.is_some(),"turnstileSiteKey":state.turnstile_site_key}}),
+        json!({"data":{"emailVerification":state.auth_email_delivery_enabled,"passwordRecovery":state.auth_email_delivery_enabled && state.account_email_from.is_some(),"turnstileSiteKey":state.turnstile_site_key}}),
     )
 }
 

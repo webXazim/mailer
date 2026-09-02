@@ -29,6 +29,7 @@ def main():
     directory = Path(temporary.name)
     values = {key: secrets.token_hex(32) for key in ['POSTGRES_PASSWORD', 'NATS_PASSWORD', 'EVENT_INGEST_TOKEN', 'WEBHOOK_SIGNING_MASTER_KEY']}
     values.update(APP_ENV='development', DOMAIN_PROVIDER='disabled', OBJECT_STORAGE_PROVIDER='disabled',
+                  AUTH_EMAIL_DELIVERY_ENABLED='true',
                   ACCOUNT_EMAIL_FROM='account@integration.invalid', SES_CONFIGURATION_SET='',
                   TURNSTILE_SITE_KEY='1x00000000000000000000AA',
                   TURNSTILE_SECRET_KEY='1x0000000000000000000000000000000AA',
@@ -197,6 +198,17 @@ def main():
         expect(401,request('GET','/v1/auth/session',cookie=cookie))
         expect(200,request('POST','/v1/auth/login',{'email':'owner@integration.invalid','password':PASSWORD+'-changed'}))
         print('PASS: durable reset queue, one-time token, password change and session revocation',flush=True)
+        environment['AUTH_EMAIL_DELIVERY_ENABLED'] = 'false'
+        run(['up', '-d', '--no-build', '--force-recreate', '--wait', '--wait-timeout', '120', 'api', 'frontend'])
+        config = expect(200, request('GET', '/v1/auth/config'))['data']
+        assert not config['emailVerification'] and not config['passwordRecovery']
+        immediate = request('POST', '/v1/auth/signup', {'email': 'immediate@integration.invalid', 'password': PASSWORD,
+                            'first_name': 'Immediate', 'last_name': 'Owner', 'turnstile_token': 'XXXX.DUMMY.TOKEN.XXXX'})
+        immediate_data = expect(200, immediate)['data']
+        assert not immediate_data['verificationRequired'] and immediate_data['session']['user']['email'] == 'immediate@integration.invalid'
+        expect(200, request('GET', '/v1/auth/session', cookie=immediate[2]))
+        assert sql("SELECT count(*) FROM account_emails WHERE recipient='immediate@integration.invalid';") == '0'
+        print('PASS: signup creates an immediate session when account email delivery is disabled', flush=True)
         if options.keep:
             port=run(['port','api','8081']).strip()
             state=ROOT/'.work'/'integration-state.json';state.parent.mkdir(exist_ok=True)
@@ -208,7 +220,7 @@ def main():
         else:
             # Validate strict production startup without running any provider worker.
             run(['stop', 'worker'])
-            environment.update(APP_ENV='production', DOMAIN_PROVIDER='ses', OBJECT_STORAGE_PROVIDER='r2',
+            environment.update(APP_ENV='production', DOMAIN_PROVIDER='ses', OBJECT_STORAGE_PROVIDER='r2', ACCOUNT_EMAIL_FROM='',
                 SES_CONFIGURATION_SET='unused', TURNSTILE_SITE_KEY='unused-site-key', TURNSTILE_SECRET_KEY='unused-secret-key-that-is-long-enough',
                 SES_EVENTS_QUEUE_URL='https://sqs.ap-southeast-1.amazonaws.com/000000000000/unused',
                 SES_EVENTS_TOPIC_ARN='arn:aws:sns:ap-southeast-1:000000000000:unused',

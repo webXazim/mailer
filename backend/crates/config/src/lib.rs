@@ -16,6 +16,7 @@ pub struct Settings {
     pub aws_region: String,
     pub ses_configuration_set: Option<String>,
     pub account_email_from: Option<String>,
+    pub auth_email_delivery_enabled: bool,
     pub turnstile_site_key: Option<String>,
     pub turnstile_secret_key: Option<String>,
     pub domain_provider: String,
@@ -56,6 +57,7 @@ impl Settings {
         let aws_region = env::var("AWS_REGION").unwrap_or_else(|_| "ap-southeast-1".into());
         let ses_configuration_set = optional("SES_CONFIGURATION_SET");
         let account_email_from = optional("ACCOUNT_EMAIL_FROM");
+        let auth_email_delivery_enabled = parse_bool("AUTH_EMAIL_DELIVERY_ENABLED", false)?;
         let turnstile_site_key = optional("TURNSTILE_SITE_KEY");
         let turnstile_secret_key = optional("TURNSTILE_SECRET_KEY");
         let domain_provider = env::var("DOMAIN_PROVIDER").unwrap_or_else(|_| "disabled".into());
@@ -118,13 +120,15 @@ impl Settings {
         }
         if app_env == "production" {
             if ses_configuration_set.is_none()
-                || account_email_from.is_none()
                 || turnstile_site_key.is_none()
                 || turnstile_secret_key
                     .as_ref()
                     .is_none_or(|value| value.len() < 20)
             {
-                bail!("Production requires SES_CONFIGURATION_SET, ACCOUNT_EMAIL_FROM, TURNSTILE_SITE_KEY and a valid TURNSTILE_SECRET_KEY");
+                bail!("Production requires SES_CONFIGURATION_SET, TURNSTILE_SITE_KEY and a valid TURNSTILE_SECRET_KEY");
+            }
+            if auth_email_delivery_enabled && account_email_from.is_none() {
+                bail!("ACCOUNT_EMAIL_FROM is required when AUTH_EMAIL_DELIVERY_ENABLED=true");
             }
             if database_url.contains("localhost") || database_url.contains("REPLACE_WITH") {
                 bail!("DATABASE_URL must use production credentials and host in production");
@@ -200,6 +204,7 @@ impl Settings {
             aws_region,
             ses_configuration_set,
             account_email_from,
+            auth_email_delivery_enabled,
             turnstile_site_key,
             turnstile_secret_key,
             domain_provider,

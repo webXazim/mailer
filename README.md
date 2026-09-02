@@ -70,12 +70,14 @@ Additional values at the top of `.env`:
 
 - `SES_CONFIGURATION_SET`: the exact SES configuration-set name whose event destination
   publishes to your SNS topic. Every production developer send selects it.
-- `ACCOUNT_EMAIL_FROM`: a plain SES-verified sender address for account password resets,
-  for example `accounts@your-verified-domain.com`. Verify it in SES before relying on recovery.
+- `AUTH_EMAIL_DELIVERY_ENABLED`: leave `false` to let new users sign in immediately;
+  set `true` after verification and password-recovery email delivery is ready.
+- `ACCOUNT_EMAIL_FROM`: an SES-verified sender required only when
+  `AUTH_EMAIL_DELIVERY_ENABLED=true`.
 - `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY`: create a Cloudflare Turnstile
   widget for `mailer.crescentsphere.com`. The backend validates every public signup.
 
-After deployment, create an account and verify its email. A workspace is created
+After deployment, create an account. A workspace is created
 automatically and starts in **Test**:
 send from `sender@sandbox.mailer.invalid`, create a test key, and inspect the resulting
 email/events. No domain or real recipient is needed for that simulation. Then add a
@@ -161,8 +163,9 @@ real SES delivery. See [backend configuration](backend/README.md) for IAM,
 SES event setup and a real delivery test. Cloudflare Tunnel carries HTTP traffic;
 it is not an SMTP server or a replacement for SES.
 
-The console now supports public registration with email verification and Cloudflare
-Turnstile. New workspaces cannot send production email until operator approval. MFA, billing,
+The console supports public registration protected by Cloudflare Turnstile. Account email
+delivery is disabled by default, so signup creates a session immediately. Email verification
+and password recovery can be enabled later. New workspaces cannot send production email until operator approval. MFA, billing,
 templates, and team management are not exposed. See [release notes](RELEASE_NOTES.md)
 and the console's API guide for the supported contract.
 

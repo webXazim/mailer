@@ -19,6 +19,9 @@ export function Domains({ admin }: { admin: boolean }) {
   const pending = useRef<string[]>([]), checking = useRef(false), [autoChecking, setAutoChecking] = useState(false), [autoError, setAutoError] = useState('')
   pending.current = list.result?.data.filter(domain => domain.status === 'pending').map(domain => domain.id) ?? []
   useEffect(() => {
+    if (!selected && pending.current.length > 0) setSelected(pending.current[0])
+  }, [selected, list.result])
+  useEffect(() => {
     if (!admin) return
     let cancelled = false
     const verifyPending = async () => {

@@ -1,4 +1,4 @@
-import { ReactNode, useCallback, useEffect, useState } from 'react'
+import { ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { RefreshCw, X } from 'lucide-react'
 import { api } from '../../lib/api/client'
 export type Envelope<T> = { data: T; hasMore?: boolean; nextOffset?: number | null }
@@ -15,11 +15,15 @@ export const date = (value: string) => new Date(value).toLocaleString()
 export function useResource<T>(path: string | null, poll = false) {
   const [result, setResult] = useState<Envelope<T>>()
   const [error, setError] = useState(''), [loading, setLoading] = useState(true), [revision, setRevision] = useState(0)
+  const previousPath = useRef(path)
   const reload = useCallback(() => setRevision(value => value + 1), [])
   useEffect(() => {
-    if (!path) { setLoading(false); return }
+    const pathChanged = previousPath.current !== path
+    previousPath.current = path
+    if (!path) { setResult(undefined); setLoading(false); return }
     const controller = new AbortController()
-    setLoading(true); setError(''); setResult(undefined)
+    if (pathChanged) setResult(undefined)
+    setLoading(pathChanged || !result); setError('')
     api.get<Envelope<T>>(path, { signal: controller.signal }).then(value => { if (!controller.signal.aborted) setResult(value) }).catch(error => {
       if (!controller.signal.aborted) setError(errorText(error))
     }).finally(() => { if (!controller.signal.aborted) setLoading(false) })

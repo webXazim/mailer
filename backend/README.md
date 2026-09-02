@@ -113,7 +113,7 @@ file with the development Compose file. The API base is
 
 ### AWS
 
-Use `me-south-1` for SES, SNS, and SQS. On a VPS, create a dedicated IAM user
+Use `ap-southeast-1` for SES, SNS, and SQS. On a VPS, create a dedicated IAM user
 for this deployment; never use the AWS root account. Its policy should allow
 only the SES identity/send operations used by the API and worker, plus
 `sqs:ReceiveMessage`, `sqs:DeleteMessage`, `sqs:ChangeMessageVisibility`, and
@@ -221,12 +221,13 @@ AWS policy starting points are under `backend/deploy/aws/`; replace account and
 configuration-set placeholders and review the effective permissions in AWS.
 
 
-## Private release API contract
+## Public beta API contract
 
-- `POST /v1/auth/signup` requires `signup_token` when `SIGNUP_TOKEN` is configured
-  (mandatory in production). This is trusted invite-only onboarding, not public signup/email verification.
-- `GET /v1/auth/config` advertises invite/recovery availability. Signup/login use
-  `email`, `password`; signup additionally uses `first_name`, `last_name`, `workspace_name`.
+- `POST /v1/auth/signup` accepts `email`, `password`, `first_name`, `last_name`, and
+  `turnstile_token`. Production validates Turnstile server-side and queues a one-time
+  email-verification link. The workspace name is created automatically.
+- New workspaces can create test keys and simulate delivery. Production API keys and
+  production submissions require operator approval through `sh manage approve-workspace`.
 - `GET /v1/emails?limit=25&offset=0&environment=test` lists messages. Keys only see
   their environment; a console session can select either. `GET /v1/emails/{id}` returns
   status, recipients, up to 100 latest events, metadata, and retained body content.
@@ -256,7 +257,7 @@ configuration-set placeholders and review the effective permissions in AWS.
 The monthly limit counts accepted message submissions, including test messages, not
 recipients/provider billing units. Concurrency/rate limits are additional safeguards.
 SES account quotas and reputation need independent monitoring. Templates, custom headers,
-tags, billing, public signup verification, MFA, and team administration are deferred.
+tags, billing, MFA, and team administration are deferred.
 
 ## Recovery and retention
 

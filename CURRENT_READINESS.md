@@ -1,9 +1,9 @@
 # Remaining readiness work
 
-Rechecked 2026-08-31 after the private-release implementation. This is the current
+Rechecked 2026-09-02 after the public-onboarding implementation. This is the current
 assessment; `READINESS_AUDIT.md` is the historical pre-fix review.
 
-The core private developer workflow is implemented and locally tested. Production
+The core public-beta developer workflow is implemented and locally tested. Production
 readiness is not yet established. Passing unit/integration tests does not establish
 provider delivery, operational recovery, or coverage of every failure path.
 
@@ -41,12 +41,14 @@ change application behavior, or rerun the earlier test suites.
 
 ## Deliberately absent features
 
-Public email-verified signup, MFA, team administration, billing, templates, custom
-headers, and tags remain absent. They need not block trusted private use, but the
-service should not be opened as a public multi-customer platform on that basis.
+MFA, team administration, billing, templates, custom headers, and tags remain absent.
+Public signup now uses server-validated Turnstile, expiring email verification, and
+operator approval before production sending. Before broad promotion, add legal policy
+pages, account deletion/export, an approval/support process, and abuse monitoring.
 Unverified domain reservations also lack expiry/ownership-dispute administration.
 
 The previous passing checks remain useful evidence: 18 Rust tests, frontend
-production build, isolated API/NATS/PostgreSQL integration, strict production API
+production build, isolated API/NATS/PostgreSQL integration including public signup and
+production approval, strict production API
 startup with dummy settings, and browser flows. They support controlled testing;
 they are not a production certification.

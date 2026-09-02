@@ -80,6 +80,13 @@ async fn create_key(
             "One or more API key scopes are invalid",
         );
     }
+    if input.environment == "production" && !production_enabled(&state, workspace_id).await {
+        return error(
+            StatusCode::FORBIDDEN,
+            "production_access_required",
+            "Production sending has not been approved for this workspace",
+        );
+    }
     let expires_in_days = input.expires_in_days.unwrap_or(0);
     if !(expires_in_days == 0 || (1..=365).contains(&expires_in_days)) {
         return error(
@@ -171,6 +178,15 @@ async fn rotate_key(
         }
     };
     let existing = match sqlx::query("SELECT name, environment, scopes, expires_at FROM api_keys WHERE id = $1 AND workspace_id = $2 AND revoked_at IS NULL FOR UPDATE").bind(id).bind(workspace_id).fetch_optional(&mut *tx).await { Ok(Some(value)) => value, Ok(None) => return error(StatusCode::NOT_FOUND, "api_key_not_found", "API key was not found"), Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to rotate API key") };
+    if existing.get::<String, _>("environment") == "production"
+        && !production_enabled(&state, workspace_id).await
+    {
+        return error(
+            StatusCode::FORBIDDEN,
+            "production_access_required",
+            "Production sending has not been approved for this workspace",
+        );
+    }
     let secret = format!(
         "cs_{}_{}",
         if existing.get::<String, _>("environment") == "production" {
@@ -198,6 +214,16 @@ async fn rotate_key(
         );
     }
     Json(json!({"data": {"id": new_id, "prefix": prefix, "secret": secret}})).into_response()
+}
+
+pub(crate) async fn production_enabled(state: &AppState, workspace_id: Uuid) -> bool {
+    sqlx::query_scalar::<_, bool>("SELECT production_enabled FROM workspaces WHERE id=$1")
+        .bind(workspace_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(false)
 }
 
 #[allow(dead_code)]

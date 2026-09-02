@@ -28,7 +28,7 @@ The Compose stack serves the compiled app through Nginx at
 
 ## Integration boundary
 
-The active console is in `src/features/live/` and uses the typed API client for sessions, private signup, password reset, domains, keys, sending, activity, webhooks, and suppressions. `App.tsx` mounts this console; older feature/fixture files remain unmounted design references. No billing, MFA, template, or team-management screens are exposed. Server permissions remain authoritative. Test/production is selected explicitly, and test sends never send recipient email.
+The active console is in `src/features/live/` and uses the typed API client for sessions, verified public signup, password reset, domains, keys, sending, activity, webhooks, and suppressions. `App.tsx` mounts this console; older feature/fixture files remain unmounted design references. No billing, MFA, template, or team-management screens are exposed. Server permissions remain authoritative. Test/production is selected explicitly, and test sends never send recipient email.
 
 ## Backend
 

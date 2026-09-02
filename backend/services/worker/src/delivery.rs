@@ -308,13 +308,14 @@ async fn process(
             )))
         }
     };
-    let mut tx =
-        match pool.begin().await {
-            Ok(tx) => tx,
-            Err(e) => return Ok(Outcome::Failed(format!(
+    let mut tx = match pool.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            return Ok(Outcome::Failed(format!(
                 "Provider accepted message; state transaction failed; manual review required: {e}"
-            ))),
-        };
+            )))
+        }
+    };
     let updated = match sqlx::query("UPDATE emails SET status = 'sent', provider_message_id = $2, sent_at = now(), processing_started_at = NULL WHERE id = $1 AND status = 'processing'").bind(email.id).bind(&provider_id).execute(&mut *tx).await {
         Ok(value) => value,
         Err(error) => return Ok(Outcome::Failed(format!("provider accepted message but state recording failed; manual review required: {error}"))),

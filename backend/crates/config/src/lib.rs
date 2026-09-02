@@ -16,7 +16,8 @@ pub struct Settings {
     pub aws_region: String,
     pub ses_configuration_set: Option<String>,
     pub account_email_from: Option<String>,
-    pub signup_token: Option<String>,
+    pub turnstile_site_key: Option<String>,
+    pub turnstile_secret_key: Option<String>,
     pub domain_provider: String,
     pub event_ingest_token: String,
     pub webhook_signing_master_key: String,
@@ -52,10 +53,11 @@ impl Settings {
         let nats_url = env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
         let console_origin =
             env::var("CONSOLE_ORIGIN").unwrap_or_else(|_| "http://localhost:5173".into());
-        let aws_region = env::var("AWS_REGION").unwrap_or_else(|_| "me-south-1".into());
+        let aws_region = env::var("AWS_REGION").unwrap_or_else(|_| "ap-southeast-1".into());
         let ses_configuration_set = optional("SES_CONFIGURATION_SET");
         let account_email_from = optional("ACCOUNT_EMAIL_FROM");
-        let signup_token = optional("SIGNUP_TOKEN");
+        let turnstile_site_key = optional("TURNSTILE_SITE_KEY");
+        let turnstile_secret_key = optional("TURNSTILE_SECRET_KEY");
         let domain_provider = env::var("DOMAIN_PROVIDER").unwrap_or_else(|_| "disabled".into());
         let event_ingest_token =
             env::var("EVENT_INGEST_TOKEN").unwrap_or_else(|_| DEVELOPMENT_EVENT_TOKEN.into());
@@ -117,9 +119,12 @@ impl Settings {
         if app_env == "production" {
             if ses_configuration_set.is_none()
                 || account_email_from.is_none()
-                || signup_token.as_ref().is_none_or(|v| v.len() < 32)
+                || turnstile_site_key.is_none()
+                || turnstile_secret_key
+                    .as_ref()
+                    .is_none_or(|value| value.len() < 20)
             {
-                bail!("Production requires SES_CONFIGURATION_SET, ACCOUNT_EMAIL_FROM and a SIGNUP_TOKEN of at least 32 characters");
+                bail!("Production requires SES_CONFIGURATION_SET, ACCOUNT_EMAIL_FROM, TURNSTILE_SITE_KEY and a valid TURNSTILE_SECRET_KEY");
             }
             if database_url.contains("localhost") || database_url.contains("REPLACE_WITH") {
                 bail!("DATABASE_URL must use production credentials and host in production");
@@ -195,7 +200,8 @@ impl Settings {
             aws_region,
             ses_configuration_set,
             account_email_from,
-            signup_token,
+            turnstile_site_key,
+            turnstile_secret_key,
             domain_provider,
             event_ingest_token,
             webhook_signing_master_key,

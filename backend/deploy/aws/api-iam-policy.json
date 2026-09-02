@@ -9,7 +9,7 @@
         "ses:GetEmailIdentity",
         "ses:PutEmailIdentityMailFromAttributes"
       ],
-      "Resource": "arn:aws:ses:me-south-1:ACCOUNT_ID:identity/*"
+      "Resource": "arn:aws:ses:ap-southeast-1:ACCOUNT_ID:identity/*"
     }
   ]
 }

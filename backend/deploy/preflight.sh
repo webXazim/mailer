@@ -8,7 +8,7 @@ test "$(stat -c '%a' .env)" = 600 || fail 'Run chmod 600 .env.'
 set -a
 . ./.env
 set +a
-for name in CLOUDFLARE_TUNNEL_TOKEN POSTGRES_PASSWORD NATS_PASSWORD EVENT_INGEST_TOKEN WEBHOOK_SIGNING_MASTER_KEY API_AWS_ACCESS_KEY_ID API_AWS_SECRET_ACCESS_KEY WORKER_AWS_ACCESS_KEY_ID WORKER_AWS_SECRET_ACCESS_KEY SES_EVENTS_QUEUE_URL SES_EVENTS_TOPIC_ARN SES_CONFIGURATION_SET ACCOUNT_EMAIL_FROM SIGNUP_TOKEN OBJECT_STORAGE_ENDPOINT OBJECT_STORAGE_BUCKET OBJECT_STORAGE_ACCESS_KEY_ID OBJECT_STORAGE_SECRET_ACCESS_KEY; do
+for name in CLOUDFLARE_TUNNEL_TOKEN TURNSTILE_SITE_KEY TURNSTILE_SECRET_KEY POSTGRES_PASSWORD NATS_PASSWORD EVENT_INGEST_TOKEN WEBHOOK_SIGNING_MASTER_KEY API_AWS_ACCESS_KEY_ID API_AWS_SECRET_ACCESS_KEY WORKER_AWS_ACCESS_KEY_ID WORKER_AWS_SECRET_ACCESS_KEY SES_EVENTS_QUEUE_URL SES_EVENTS_TOPIC_ARN SES_CONFIGURATION_SET ACCOUNT_EMAIL_FROM OBJECT_STORAGE_ENDPOINT OBJECT_STORAGE_BUCKET OBJECT_STORAGE_ACCESS_KEY_ID OBJECT_STORAGE_SECRET_ACCESS_KEY; do
     eval "value=\${$name:-}"
     test -n "$value" || fail "$name is required (see the top of .env)."
     case "$value" in *REPLACE*|*ACCOUNT_ID*|*change-me*|*mailer-development*) fail "$name still contains a placeholder." ;; esac
@@ -18,10 +18,11 @@ for name in POSTGRES_PASSWORD NATS_PASSWORD; do
     test "${#value}" -ge 32 || fail "$name must contain at least 32 hex characters."
     case "$value" in *[!a-fA-F0-9]*) fail "$name must be URL-safe hex; generate with openssl rand -hex 32." ;; esac
 done
-for name in EVENT_INGEST_TOKEN WEBHOOK_SIGNING_MASTER_KEY SIGNUP_TOKEN; do
+for name in EVENT_INGEST_TOKEN WEBHOOK_SIGNING_MASTER_KEY TURNSTILE_SECRET_KEY; do
     eval "value=\${$name}"
     test "${#value}" -ge 32 || fail "$name must contain at least 32 characters."
 done
+test "${#TURNSTILE_SECRET_KEY}" -ge 20 || fail 'TURNSTILE_SECRET_KEY is too short.'
 for name in POSTGRES_USER POSTGRES_DB NATS_USER; do
     eval "value=\${$name:-mailer}"
     case "$value" in *[!a-zA-Z0-9_-]*) fail "$name must use letters, numbers, underscore or hyphen." ;; esac

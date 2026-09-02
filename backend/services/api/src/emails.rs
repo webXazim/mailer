@@ -92,6 +92,13 @@ async fn send_email(
             "The API key and request environment must match",
         );
     }
+    if environment == "production" && !api_keys::production_enabled(&state, workspace_id).await {
+        return error(
+            StatusCode::FORBIDDEN,
+            "production_access_required",
+            "Production sending has not been approved for this workspace",
+        );
+    }
     let Some(idempotency_key) = headers
         .get("idempotency-key")
         .and_then(|value| value.to_str().ok())

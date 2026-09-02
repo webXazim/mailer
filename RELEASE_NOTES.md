@@ -1,15 +1,15 @@
-# Private developer release
+# Public beta
 
 See [the current readiness assessment](CURRENT_READINESS.md) for remaining gaps
 identified in the follow-up review before relying on production delivery.
 
-This release turns the prototype console into an invite-only developer mailer.
-It is suitable for controlled VPS testing after configuring the providers. Public
-customer launch still requires the real delivery and operational checks below.
+This release turns the prototype console into a public developer-mailer beta.
+It is suitable for invited external testers after configuring the providers.
 
 ## Available workflows
 
-- Invite-token signup, login, logout, and queued email password recovery.
+- Public signup with Turnstile, email verification, automatic workspaces, login,
+  logout, and queued email password recovery.
 - Test and production API keys, permissions, expiry, atomic rotation, and revocation.
 - Domain registration, ownership/DKIM/MAIL FROM DNS instructions, verification,
   and local disabling without deleting shared SES identities.
@@ -20,7 +20,7 @@ customer launch still requires the real delivery and operational checks below.
 - Workspace suppression management and checks at admission and before delivery.
 
 The console uses persisted API data. Prototype billing, MFA, team administration,
-and template screens are no longer mounted. Those features, public email verification,
+and template screens are no longer mounted. Those features,
 custom headers, and tags are not part of this release.
 
 ## Reliability and security changes
@@ -37,8 +37,8 @@ stale or exhausted jobs become visible failures. Ambiguous SES acceptance is
 held for operator reconciliation instead of automatically risking a duplicate.
 Content retention also applies when final delivery feedback never arrives.
 
-Migration `0014_usable_mailer.sql` adds environment isolation and the account-email
-queue. Existing webhooks migrate to production. Back up before deployment.
+Migration `0015_public_signup.sql` adds verification tokens and per-workspace production
+approval. Existing workspaces are grandfathered into production access. Back up before deployment.
 Keep existing DB/NATS/webhook master secrets stable across redeployments.
 
 ## Verification
@@ -69,7 +69,7 @@ python backend/deploy/tests/integration.py
 ## Before using production keys
 
 1. Fill provider credentials at the top of `.env`, including the SES configuration
-   set and a verified `ACCOUNT_EMAIL_FROM`. Keep `SIGNUP_TOKEN` private.
+   set, a verified `ACCOUNT_EMAIL_FROM`, and Cloudflare Turnstile keys.
 2. Configure SES/SNS/SQS event delivery, IAM, R2 retention, and sender DNS. Review
    SES sandbox/production access and account sending quotas.
 3. Run `sh manage deploy` and configure the Cloudflare route to `http://api:8081`.

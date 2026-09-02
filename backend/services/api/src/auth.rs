@@ -8,6 +8,10 @@ use axum::{
     Json, Router,
 };
 use chrono::Timelike;
+use http_body_util::{BodyExt, Full};
+use hyper::{body::Bytes, Request};
+use hyper_rustls::HttpsConnectorBuilder;
+use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::Row;
@@ -27,8 +31,17 @@ pub struct SignupRequest {
     pub password: String,
     pub first_name: String,
     pub last_name: String,
-    pub workspace_name: Option<String>,
-    pub signup_token: Option<String>,
+    pub turnstile_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct VerificationRequest {
+    pub token: String,
+}
+
+#[derive(Deserialize)]
+pub struct ResendVerificationRequest {
+    pub email: String,
 }
 
 #[derive(Deserialize)]
@@ -69,6 +82,7 @@ pub(crate) struct WorkspaceContext {
     pub(crate) name: String,
     pub(crate) slug: String,
     pub(crate) plan: String,
+    pub(crate) production_enabled: bool,
     pub(crate) usage: Usage,
 }
 
@@ -82,6 +96,14 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/v1/auth/config", get(auth_config))
         .route("/v1/auth/signup", post(signup))
+        .route(
+            "/v1/auth/email-verification/complete",
+            post(complete_verification),
+        )
+        .route(
+            "/v1/auth/email-verification/resend",
+            post(resend_verification),
+        )
         .route("/v1/auth/login", post(login))
         .route("/v1/auth/logout", post(logout))
         .route("/v1/auth/session", get(session))
@@ -97,22 +119,23 @@ async fn signup(
     Json(input): Json<SignupRequest>,
 ) -> Response {
     let ip = client_ip(peer.ip(), &headers, state.trust_proxy_headers);
-    if let Err(response) = enforce_auth_limit(&state, &format!("signup:ip:{ip}"), 10).await {
+    if let Err(response) = enforce_auth_limit(&state, &format!("signup:ip:{ip}"), 5).await {
         return response;
     }
-    if state.signup_token.as_ref().is_some_and(|expected| {
-        !::auth::token_matches(input.signup_token.as_deref().unwrap_or(""), expected)
-    }) {
-        return error(
-            StatusCode::FORBIDDEN,
-            "invite_required",
-            "A valid private signup token is required",
-        );
+    if let Err(response) =
+        verify_turnstile(&state, input.turnstile_token.as_deref(), &ip.to_string()).await
+    {
+        return response;
     }
     let email = input.email.trim().to_lowercase();
     let first = input.first_name.trim();
     let last = input.last_name.trim();
-    if !valid_email(&email) || first.is_empty() || last.is_empty() {
+    if !valid_email(&email)
+        || first.is_empty()
+        || last.is_empty()
+        || first.len() > 80
+        || last.len() > 80
+    {
         return error(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -127,18 +150,7 @@ async fn signup(
         );
     }
     let display_name = format!("{first} {last}");
-    let workspace_name = input
-        .workspace_name
-        .as_deref()
-        .unwrap_or("My Workspace")
-        .trim();
-    if workspace_name.is_empty() || workspace_name.len() > 80 {
-        return error(
-            StatusCode::BAD_REQUEST,
-            "invalid_workspace",
-            "Workspace name is invalid",
-        );
-    }
+    let workspace_name = format!("{}'s Workspace", first);
     let password_hash = match password_hash_async(input.password.clone()).await {
         Ok(value) => value,
         Err(_) => {
@@ -150,10 +162,9 @@ async fn signup(
         }
     };
     let token = generate_token();
-    let token_hash = hash_token(&token);
     let slug = format!(
         "{}-{}",
-        slugify(workspace_name),
+        slugify(&workspace_name),
         &Uuid::new_v4().simple().to_string()[..8]
     );
     let mut tx = match state.db.begin().await {
@@ -194,7 +205,7 @@ async fn signup(
     let workspace_id = match sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO workspaces (name, slug, created_by) VALUES ($1, $2, $3) RETURNING id",
     )
-    .bind(workspace_name)
+    .bind(&workspace_name)
     .bind(&slug)
     .bind(user_id)
     .fetch_one(&mut *tx)
@@ -224,9 +235,15 @@ async fn signup(
             "Unable to create workspace",
         );
     }
-    if sqlx::query("INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1, $2, now() + make_interval(days => $3::int))")
-        .bind(user_id).bind(token_hash).bind(SESSION_DAYS).execute(&mut *tx).await.is_err() {
-        return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to create session");
+    if queue_verification(&state, &mut tx, user_id, &email, &token)
+        .await
+        .is_err()
+    {
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "Unable to queue verification email",
+        );
     }
     if sqlx::query("INSERT INTO audit_events (workspace_id, actor_user_id, action) VALUES ($1, $2, 'account.created')")
         .bind(workspace_id).bind(user_id).execute(&mut *tx).await.is_err() {
@@ -239,13 +256,239 @@ async fn signup(
             "Unable to create account",
         );
     }
-    let body = Json(
-        json!({"data": {"user": {"id": user_id, "email": email, "name": display_name, "role": "owner"}, "workspace": {"id": workspace_id, "name": workspace_name, "slug": slug, "plan": "free", "usage": {"sent": 0, "limit": 1000}}}}),
+    Json(json!({"data": {"verificationRequired": true, "email": email}})).into_response()
+}
+
+async fn queue_verification(
+    state: &AppState,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+    email: &str,
+    token: &str,
+) -> Result<(), sqlx::Error> {
+    let link = format!(
+        "{}/#/verify-email?token={}",
+        state.console_origin.trim_end_matches('/'),
+        token
     );
-    with_cookie(
-        body.into_response(),
-        cookie(&token, true, false, state.environment == "production"),
+    let body = format!("Verify your CrescentSphere Mailer account using this link (valid for 24 hours):\n\n{link}\n\nIf you did not create this account, ignore this email.");
+    sqlx::query(
+        "UPDATE email_verification_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL",
     )
+    .bind(user_id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query("INSERT INTO email_verification_tokens (user_id,token_hash,expires_at) VALUES ($1,$2,now()+interval '24 hours')")
+        .bind(user_id).bind(hash_token(token)).execute(&mut **tx).await?;
+    sqlx::query("INSERT INTO account_emails (recipient,subject,body,expires_at) VALUES ($1,'Verify your Mailer account',$2,now()+interval '24 hours')")
+        .bind(email).bind(body).execute(&mut **tx).await?;
+    Ok(())
+}
+
+async fn complete_verification(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(input): Json<VerificationRequest>,
+) -> Response {
+    let ip = client_ip(peer.ip(), &headers, state.trust_proxy_headers);
+    if let Err(response) = enforce_auth_limit(&state, &format!("verify:ip:{ip}"), 20).await {
+        return response;
+    }
+    if input.token.is_empty() || input.token.len() > 256 {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_verification_token",
+            "Verification link is invalid or expired",
+        );
+    }
+    let mut tx = match state.db.begin().await {
+        Ok(tx) => tx,
+        Err(_) => {
+            return error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Verification is temporarily unavailable",
+            )
+        }
+    };
+    let user_id = match sqlx::query_scalar::<_, Uuid>("SELECT user_id FROM email_verification_tokens WHERE token_hash=$1 AND used_at IS NULL AND expires_at>now() FOR UPDATE")
+        .bind(hash_token(&input.token)).fetch_optional(&mut *tx).await {
+        Ok(Some(id)) => id,
+        _ => return error(StatusCode::BAD_REQUEST, "invalid_verification_token", "Verification link is invalid or expired"),
+    };
+    let session_token = generate_token();
+    let failed = sqlx::query("UPDATE users SET email_verified_at=COALESCE(email_verified_at,now()),updated_at=now() WHERE id=$1")
+        .bind(user_id).execute(&mut *tx).await.is_err()
+        || sqlx::query("UPDATE email_verification_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL")
+            .bind(user_id).execute(&mut *tx).await.is_err()
+        || sqlx::query("INSERT INTO sessions (user_id,token_hash,expires_at) VALUES ($1,$2,now()+make_interval(days=>$3::int))")
+            .bind(user_id).bind(hash_token(&session_token)).bind(SESSION_DAYS).execute(&mut *tx).await.is_err();
+    if failed || tx.commit().await.is_err() {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Verification is temporarily unavailable",
+        );
+    }
+    match load_context(&state, &session_token).await {
+        Ok(context) => with_cookie(
+            Json(json!({"data":context})).into_response(),
+            cookie(
+                &session_token,
+                true,
+                false,
+                state.environment == "production",
+            ),
+        ),
+        Err(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Account verified; sign in to continue",
+        ),
+    }
+}
+
+async fn resend_verification(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(input): Json<ResendVerificationRequest>,
+) -> Response {
+    let ip = client_ip(peer.ip(), &headers, state.trust_proxy_headers);
+    if enforce_auth_limit(&state, &format!("verify-resend:ip:{ip}"), 5)
+        .await
+        .is_err()
+    {
+        return Json(json!({"data":{"accepted":true}})).into_response();
+    }
+    let email = input.email.trim().to_lowercase();
+    if enforce_auth_limit(&state, &format!("verify-resend:email:{email}"), 3)
+        .await
+        .is_err()
+    {
+        return Json(json!({"data":{"accepted":true}})).into_response();
+    }
+    if valid_email(&email) {
+        if let Ok(Some(user_id)) = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM users WHERE lower(email)=$1 AND email_verified_at IS NULL",
+        )
+        .bind(&email)
+        .fetch_optional(&state.db)
+        .await
+        {
+            if let Ok(mut tx) = state.db.begin().await {
+                let token = generate_token();
+                if queue_verification(&state, &mut tx, user_id, &email, &token)
+                    .await
+                    .is_ok()
+                {
+                    let _ = tx.commit().await;
+                }
+            }
+        }
+    }
+    Json(json!({"data":{"accepted":true}})).into_response()
+}
+
+#[derive(Deserialize)]
+struct TurnstileResult {
+    success: bool,
+    hostname: Option<String>,
+    action: Option<String>,
+}
+
+async fn verify_turnstile(
+    state: &AppState,
+    token: Option<&str>,
+    remote_ip: &str,
+) -> Result<(), Response> {
+    let Some(secret) = state.turnstile_secret_key.as_deref() else {
+        return Ok(());
+    };
+    let token = token
+        .filter(|value| !value.is_empty() && value.len() <= 2048)
+        .ok_or_else(|| {
+            error(
+                StatusCode::BAD_REQUEST,
+                "bot_verification_required",
+                "Complete the security check and try again",
+            )
+        })?;
+    let payload = serde_json::to_vec(&json!({"secret":secret,"response":token,"remoteip":remote_ip,"idempotency_key":Uuid::new_v4()}))
+        .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "bot_verification_unavailable", "Security check is temporarily unavailable"))?;
+    let connector = HttpsConnectorBuilder::new()
+        .with_native_roots()
+        .map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "bot_verification_unavailable",
+                "Security check is temporarily unavailable",
+            )
+        })?
+        .https_only()
+        .enable_http1()
+        .build();
+    let client: Client<_, Full<Bytes>> = Client::builder(TokioExecutor::new()).build(connector);
+    let request = Request::post("https://challenges.cloudflare.com/turnstile/v0/siteverify")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Full::new(Bytes::from(payload)))
+        .map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "bot_verification_unavailable",
+                "Security check is temporarily unavailable",
+            )
+        })?;
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), client.request(request))
+        .await
+        .map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "bot_verification_unavailable",
+                "Security check timed out",
+            )
+        })?
+        .map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "bot_verification_unavailable",
+                "Security check is temporarily unavailable",
+            )
+        })?;
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "bot_verification_unavailable",
+                "Security check is temporarily unavailable",
+            )
+        })?
+        .to_bytes();
+    let result: TurnstileResult = serde_json::from_slice(&bytes).map_err(|_| {
+        error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "bot_verification_unavailable",
+            "Security check is temporarily unavailable",
+        )
+    })?;
+    let expected_host = url::Url::parse(&state.console_origin)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned));
+    if !result.success
+        || result.action.as_deref() != Some("signup")
+        || result.hostname != expected_host
+    {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "bot_verification_failed",
+            "Security check failed; refresh it and try again",
+        ));
+    }
+    Ok(())
 }
 
 async fn login(
@@ -286,7 +529,7 @@ async fn login(
         }
     }
     let row = match sqlx::query(
-        "SELECT id, email, display_name, password_hash FROM users WHERE lower(email) = $1",
+        "SELECT id, email, display_name, password_hash, email_verified_at FROM users WHERE lower(email) = $1",
     )
     .bind(&email)
     .fetch_optional(&state.db)
@@ -315,6 +558,16 @@ async fn login(
             StatusCode::UNAUTHORIZED,
             "invalid_credentials",
             "Email or password is incorrect",
+        );
+    }
+    if row
+        .get::<Option<chrono::DateTime<chrono::Utc>>, _>("email_verified_at")
+        .is_none()
+    {
+        return error(
+            StatusCode::FORBIDDEN,
+            "email_not_verified",
+            "Verify your email address before signing in",
         );
     }
     let user_id: Uuid = row.get("id");
@@ -418,6 +671,12 @@ async fn request_reset(
         return Json(json!({"data": {"accepted": true}})).into_response();
     }
     if valid_email(&email) {
+        if enforce_auth_limit(&state, &format!("reset:email:{email}"), 3)
+            .await
+            .is_err()
+        {
+            return Json(json!({"data": {"accepted": true}})).into_response();
+        }
         if let Ok(Some(user_id)) =
             sqlx::query_scalar::<_, Uuid>("SELECT id FROM users WHERE lower(email) = $1")
                 .bind(&email)
@@ -632,17 +891,18 @@ fn with_cookie(mut response: Response, value: String) -> Response {
 }
 async fn auth_config(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(
-        json!({"data":{"inviteRequired":state.signup_token.is_some(),"passwordRecovery":state.account_email_from.is_some()}}),
+        json!({"data":{"passwordRecovery":state.account_email_from.is_some(),"turnstileSiteKey":state.turnstile_site_key}}),
     )
 }
 
 async fn workspace_context(state: &AppState, id: Uuid) -> Result<WorkspaceContext, sqlx::Error> {
-    let row = sqlx::query("SELECT w.name,w.slug,COALESCE(u.emails_accepted,0)::bigint AS sent,l.monthly_email_limit FROM workspaces w LEFT JOIN usage_counters u ON u.workspace_id=w.id AND u.period_start=date_trunc('month',now())::date LEFT JOIN workspace_limits l ON l.workspace_id=w.id WHERE w.id=$1").bind(id).fetch_one(&state.db).await?;
+    let row = sqlx::query("SELECT w.name,w.slug,w.production_enabled,COALESCE(u.emails_accepted,0)::bigint AS sent,l.monthly_email_limit FROM workspaces w LEFT JOIN usage_counters u ON u.workspace_id=w.id AND u.period_start=date_trunc('month',now())::date LEFT JOIN workspace_limits l ON l.workspace_id=w.id WHERE w.id=$1").bind(id).fetch_one(&state.db).await?;
     Ok(WorkspaceContext {
         id,
         name: row.get("name"),
         slug: row.get("slug"),
         plan: "private".into(),
+        production_enabled: row.get("production_enabled"),
         usage: Usage {
             sent: row.get("sent"),
             limit: row

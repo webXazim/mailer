@@ -27,6 +27,8 @@ Commands:
   production-down     Stop production services
   production-logs     Follow production logs
   production-status   Show production services and assigned localhost port
+  pending-workspaces  List public signups waiting for production approval
+  approve-workspace   Enable production sending for a workspace UUID
   healthcheck         Check the public console, API, and private-route blocking
   backup              Run an encrypted PostgreSQL backup
   restore-rehearsal   Restore the latest backup into a disposable database
@@ -102,6 +104,15 @@ case "$command" in
     production-status)
         production_compose ps
         production_compose port api 8081
+        ;;
+    pending-workspaces)
+        production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --no-align --field-separator=' | ' --command "SELECT w.id,u.email,w.name,w.created_at FROM workspaces w JOIN users u ON u.id=w.created_by WHERE NOT w.production_enabled ORDER BY w.created_at;"
+        ;;
+    approve-workspace)
+        shift
+        workspace_id=${1:-}
+        printf '%s\n' "$workspace_id" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' || { echo 'Usage: sh manage approve-workspace WORKSPACE_UUID' >&2; exit 2; }
+        production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --variable=ON_ERROR_STOP=1 --command "UPDATE workspaces SET production_enabled=true,updated_at=now() WHERE id='$workspace_id'::uuid;"
         ;;
     healthcheck)
         load_environment

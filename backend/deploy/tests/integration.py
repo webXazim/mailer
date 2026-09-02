@@ -18,7 +18,6 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[3]
-INVITE = 'integration-only-invite-token-not-for-any-live-system'
 PASSWORD = 'Integration-only-password-123'
 
 def main():
@@ -30,7 +29,7 @@ def main():
     directory = Path(temporary.name)
     values = {key: secrets.token_hex(32) for key in ['POSTGRES_PASSWORD', 'NATS_PASSWORD', 'EVENT_INGEST_TOKEN', 'WEBHOOK_SIGNING_MASTER_KEY']}
     values.update(APP_ENV='development', DOMAIN_PROVIDER='disabled', OBJECT_STORAGE_PROVIDER='disabled',
-                  SIGNUP_TOKEN=INVITE, ACCOUNT_EMAIL_FROM='account@integration.invalid', SES_CONFIGURATION_SET='',
+                  ACCOUNT_EMAIL_FROM='account@integration.invalid', SES_CONFIGURATION_SET='',
                   SES_EVENTS_QUEUE_URL='', SES_EVENTS_TOPIC_ARN='', CLOUDFLARE_TUNNEL_TOKEN='unused',
                   API_AWS_ACCESS_KEY_ID='unused', API_AWS_SECRET_ACCESS_KEY='unused',
                   WORKER_AWS_ACCESS_KEY_ID='unused', WORKER_AWS_SECRET_ACCESS_KEY='unused', FRONTEND_PORT='0',
@@ -78,9 +77,17 @@ def main():
 
     def signup(email):
         response = request('POST', '/v1/auth/signup', {'email': email, 'password': PASSWORD, 'first_name': 'Integration',
-                           'last_name': 'Owner', 'workspace_name': 'Integration workspace', 'signup_token': INVITE})
+                           'last_name': 'Owner'})
         assert response[0] in (200, 201), (response[0], response[1])
-        return response[1]['data'], response[2]
+        assert response[1]['data']['verificationRequired'] and response[2] is None
+        expect(403, request('POST', '/v1/auth/login', {'email': email, 'password': PASSWORD}))
+        first_token = re.search(r'token=([A-Za-z0-9_-]+)', sql(f"SELECT body FROM account_emails WHERE recipient='{email}' ORDER BY updated_at DESC LIMIT 1;")).group(1)
+        expect(200, request('POST', '/v1/auth/email-verification/resend', {'email': email}))
+        token = re.search(r'token=([A-Za-z0-9_-]+)', sql(f"SELECT body FROM account_emails WHERE recipient='{email}' ORDER BY updated_at DESC LIMIT 1;")).group(1)
+        assert token != first_token
+        expect(400, request('POST', '/v1/auth/email-verification/complete', {'token': first_token}))
+        verified = request('POST', '/v1/auth/email-verification/complete', {'token': token})
+        return expect(200, verified)['data'], verified[2]
 
     def send(body, key, idem):
         return request('POST', '/v1/emails', body, key=key, idem=idem)
@@ -88,13 +95,17 @@ def main():
     kept = False
     try:
         run(['up', '-d', '--no-build', '--wait', '--wait-timeout', '120', 'api', 'frontend'])
-        expect(403, request('POST', '/v1/auth/signup', {'email':'blocked@example.com','password':PASSWORD,'first_name':'Blocked','last_name':'Signup'}))
         session, cookie = signup('owner@integration.invalid')
         other, other_cookie = signup('other@integration.invalid')
         workspace = session['workspace']['id']
         sql(f"INSERT INTO domains (workspace_id,name,status,provider_status) VALUES ('{workspace}','integration.invalid','verified','verified');")
         keys = {}
-        for mode in ['test', 'production']:
+        payload = expect(200, request('POST', '/v1/api-keys', {'name': 'test', 'environment': 'test',
+            'scopes': ['emails:send', 'emails:read', 'domains:read', 'webhooks:manage', 'workspace:read', 'suppressions:manage']}, cookie=cookie))
+        keys['test'] = payload['data']
+        expect(403, request('POST', '/v1/api-keys', {'name': 'production', 'environment': 'production', 'scopes': ['emails:send']}, cookie=cookie))
+        sql(f"UPDATE workspaces SET production_enabled=true WHERE id='{workspace}';")
+        for mode in ['production']:
             payload = expect(200, request('POST', '/v1/api-keys', {'name': mode, 'environment': mode,
                 'scopes': ['emails:send', 'emails:read', 'domains:read', 'webhooks:manage', 'workspace:read', 'suppressions:manage']}, cookie=cookie))
             keys[mode] = payload['data']
@@ -120,7 +131,7 @@ def main():
         for path in ['/v1/domains', '/v1/webhooks', '/v1/workspace']:
             expect(200, request('GET', path, key=test_key))
         assert expect(200,request('GET','/v1/emails?limit=1',cookie=cookie))['hasMore']
-        print('PASS: signup gate, sessions, tenant/scope/environment isolation, retrieval and idempotency', flush=True)
+        print('PASS: verified public signup, production approval, sessions, tenant/scope/environment isolation, retrieval and idempotency', flush=True)
 
         for url in ['https://127.0.0.1/', 'https://[::1]/', 'https://[::ffff:127.0.0.1]/', 'http://hooks.example.com/']:
             expect(400, request('POST', '/v1/webhooks', {'url':url,'environment':'test','subscriptions':['email.delivery']}, cookie=cookie))
@@ -196,8 +207,9 @@ def main():
             # Validate strict production startup without running any provider worker.
             run(['stop', 'worker'])
             environment.update(APP_ENV='production', DOMAIN_PROVIDER='ses', OBJECT_STORAGE_PROVIDER='r2',
-                SES_CONFIGURATION_SET='unused', SES_EVENTS_QUEUE_URL='https://sqs.me-south-1.amazonaws.com/000000000000/unused',
-                SES_EVENTS_TOPIC_ARN='arn:aws:sns:me-south-1:000000000000:unused',
+                SES_CONFIGURATION_SET='unused', TURNSTILE_SITE_KEY='unused-site-key', TURNSTILE_SECRET_KEY='unused-secret-key-that-is-long-enough',
+                SES_EVENTS_QUEUE_URL='https://sqs.ap-southeast-1.amazonaws.com/000000000000/unused',
+                SES_EVENTS_TOPIC_ARN='arn:aws:sns:ap-southeast-1:000000000000:unused',
                 OBJECT_STORAGE_ENDPOINT='http://127.0.0.1:9', OBJECT_STORAGE_BUCKET='unused',
                 OBJECT_STORAGE_ACCESS_KEY_ID='unused', OBJECT_STORAGE_SECRET_ACCESS_KEY='unused')
             run(['up', '-d', '--no-build', '--wait', '--wait-timeout', '120', 'api', 'frontend'])

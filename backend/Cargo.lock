@@ -1002,6 +1002,10 @@ dependencies = [
  "cs-mail-config",
  "cs-mail-db",
  "cs-mail-storage",
+ "http-body-util",
+ "hyper 1.11.0",
+ "hyper-rustls 0.27.9",
+ "hyper-util",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1025,8 +1029,8 @@ dependencies = [
  "hmac 0.12.1",
  "rand",
  "sha2 0.10.9",
- "uuid",
  "url",
+ "uuid",
 ]
 
 [[package]]

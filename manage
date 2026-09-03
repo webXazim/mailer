@@ -121,6 +121,7 @@ case "$command" in
         test -n "$recipient" || { echo "Usage: sh manage account-email-status EMAIL" >&2; exit 2; }
         load_environment
         production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --variable=recipient="$recipient" --variable=ON_ERROR_STOP=1 <<'SQL'
+\x auto
 SELECT
     account_email.updated_at AS last_updated_at,
     account_email.status AS auth_status,

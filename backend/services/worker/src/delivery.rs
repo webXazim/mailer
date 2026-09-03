@@ -510,11 +510,17 @@ pub(crate) fn classify_provider_error(
     use aws_sdk_sesv2::error::{ProvideErrorMetadata, SdkError};
     match error {
         SdkError::ServiceError(context) => {
-            let code = context
-                .err()
+            let provider_error = context.err();
+            let code = provider_error
                 .code()
                 .unwrap_or("UnknownServiceError")
                 .to_owned();
+            let reason = provider_error
+                .message()
+                .map(str::trim)
+                .filter(|message| !message.is_empty() && *message != code.as_str())
+                .map(|message| format!("{code}: {message}"))
+                .unwrap_or_else(|| code.clone());
             if matches!(
                 code.as_str(),
                 "TooManyRequestsException"
@@ -522,11 +528,11 @@ pub(crate) fn classify_provider_error(
                     | "ThrottlingException"
                     | "LimitExceededException"
             ) {
-                ProviderFailure::Retryable(code)
+                ProviderFailure::Retryable(reason)
             } else if context.raw().status().as_u16() >= 500 {
-                ProviderFailure::Ambiguous(code)
+                ProviderFailure::Ambiguous(reason)
             } else {
-                ProviderFailure::Permanent(code)
+                ProviderFailure::Permanent(reason)
             }
         }
         SdkError::ConstructionFailure(_) => {

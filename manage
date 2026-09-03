@@ -122,7 +122,7 @@ case "$command" in
         load_environment
         production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --variable=recipient="$recipient" --variable=ON_ERROR_STOP=1 <<'SQL'
 SELECT
-    account_email.created_at AS requested_at,
+    account_email.updated_at AS last_updated_at,
     account_email.status AS auth_status,
     account_email.attempts AS auth_attempts,
     account_email.last_error AS auth_error,
@@ -142,7 +142,7 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) latest_event ON true
 WHERE lower(account_email.recipient) = lower(:'recipient')
-ORDER BY account_email.created_at DESC
+ORDER BY account_email.updated_at DESC
 LIMIT 10;
 SQL
         ;;

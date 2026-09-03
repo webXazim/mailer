@@ -67,6 +67,9 @@ backup:
 restore-rehearsal:
 	sh ./manage restore-rehearsal
 
-.PHONY: deploy production-init production-logs production-status healthcheck
+.PHONY: deploy production-init production-logs production-status healthcheck account-email-status
 deploy production-init production-logs production-status healthcheck:
 	sh ./manage $@
+
+account-email-status:
+	sh ./manage $@ "$(EMAIL)"

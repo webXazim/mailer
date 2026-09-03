@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Check, Mail, ShieldCheck, Zap } from 'lucide-react'
-import { api } from '../../lib/api/client'
+import { api, ApiError } from '../../lib/api/client'
 import { Envelope, Session, useAction, useResource, Field, ErrorNotice, Submit } from './shared'
 
 type AuthConfig = { emailVerification: boolean; passwordRecovery: boolean; turnstileSiteKey?: string }
@@ -40,7 +40,7 @@ export function Authentication({ signedIn }: { signedIn: (session: Session) => v
     const data = new FormData(event.currentTarget), value = (name: string) => String(data.get(name) ?? '')
     await action.run(async () => {
       if (mode === 'forgot') { await api.post('/v1/auth/password-reset/request', { email: value('email') }); setNotice('Request accepted. If this account exists, reset instructions were queued. Delivery is not yet confirmed.'); return }
-      if (mode === 'resend') { await api.post('/v1/auth/email-verification/resend', { email: value('email') }); setNotice('Request accepted. If this unverified account exists, a new code was queued. Delivery is not yet confirmed.'); return }
+      if (mode === 'resend') { const email = value('email').trim().toLowerCase(); await api.post('/v1/auth/email-verification/resend', { email }); navigate(`/verify-email?email=${encodeURIComponent(email)}&queued=1`, { replace: true }); return }
       if (mode === 'verify') { const response = await api.post<Envelope<Session>>('/v1/auth/email-verification/complete', { email: value('email'), code: value('code') }); signedIn(response.data); navigate('/', { replace: true }); return }
       if (mode === 'reset') { await api.post('/v1/auth/password-reset/complete', { token: new URLSearchParams(location.search).get('token') ?? '', password: value('password') }); window.dispatchEvent(new Event('mailer:session-expired')); setNotice('Password updated. You can now sign in.'); return }
       if (mode === 'signup') {
@@ -49,7 +49,13 @@ export function Authentication({ signedIn }: { signedIn: (session: Session) => v
         if (response.data.session) { signedIn(response.data.session); navigate('/', { replace: true }); return }
         navigate(`/verify-email?email=${encodeURIComponent(response.data.email)}&queued=1`, { replace: true }); return
       }
-      const response = await api.post<Envelope<Session>>('/v1/auth/login', { email: value('email'), password: value('password'), remember: true }); signedIn(response.data); navigate('/', { replace: true })
+      const email = value('email').trim().toLowerCase()
+      try {
+        const response = await api.post<Envelope<Session>>('/v1/auth/login', { email, password: value('password'), remember: true }); signedIn(response.data); navigate('/', { replace: true })
+      } catch (error) {
+        if (error instanceof ApiError && error.body.code === 'email_not_verified') { navigate(`/verify-email?email=${encodeURIComponent(email)}`, { replace: true }); return }
+        throw error
+      }
     })
   }
   const title = mode === 'signup' ? 'Create your account' : mode === 'forgot' ? 'Reset your password' : mode === 'resend' ? 'Resend verification code' : mode === 'reset' ? 'Choose a new password' : 'Welcome back'

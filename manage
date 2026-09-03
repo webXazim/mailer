@@ -29,6 +29,7 @@ Commands:
   production-status   Show production services and assigned localhost port
   pending-workspaces  List workspaces without production access
   approve-workspace   Manually enable production for a workspace UUID
+  account-email-status Show auth-email and downstream SES status for an address
   healthcheck         Check the public console, API, and private-route blocking
   backup              Run an encrypted PostgreSQL backup
   restore-rehearsal   Restore the latest backup into a disposable database
@@ -113,6 +114,13 @@ case "$command" in
         workspace_id=${1:-}
         printf '%s\n' "$workspace_id" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' || { echo 'Usage: sh manage approve-workspace WORKSPACE_UUID' >&2; exit 2; }
         production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --variable=ON_ERROR_STOP=1 --command "UPDATE workspaces SET production_enabled=true,updated_at=now() WHERE id='$workspace_id'::uuid;"
+        ;;
+    account-email-status)
+        shift
+        recipient=${1:-}
+        test -n "$recipient" || { echo "Usage: sh manage account-email-status EMAIL" >&2; exit 2; }
+        load_environment
+        production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --variable=recipient="$recipient" --variable=ON_ERROR_STOP=1 --command "SELECT account_email.created_at AS requested_at,account_email.status AS auth_status,account_email.attempts AS auth_attempts,account_email.last_error AS auth_error,mail.status AS delivery_status,mail.processing_attempts AS delivery_attempts,mail.last_error AS delivery_error,latest_event.event_type AS latest_event,latest_event.occurred_at AS event_time,account_email.mailer_email_id FROM account_emails account_email LEFT JOIN emails mail ON mail.id=account_email.mailer_email_id LEFT JOIN LATERAL (SELECT event_type,occurred_at FROM delivery_events WHERE email_id=mail.id ORDER BY occurred_at DESC LIMIT 1) latest_event ON true WHERE lower(account_email.recipient)=lower(:'recipient') ORDER BY account_email.created_at DESC LIMIT 10;"
         ;;
     healthcheck)
         load_environment

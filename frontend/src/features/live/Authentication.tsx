@@ -59,7 +59,7 @@ export function Authentication({ signedIn }: { signedIn: (session: Session) => v
   const description = mode === 'signup' ? 'Start testing your email integration in a few minutes.' : mode === 'forgot' ? 'We will send a secure reset link to your inbox.' : mode === 'resend' ? 'Enter the address you used when creating your account.' : mode === 'reset' ? 'Use at least 12 characters for your new password.' : 'Sign in to manage your email infrastructure.'
   return <main className="mailer-auth">
     <aside className="mailer-auth__aside">
-      <div className="mailer-auth__brand"><span><Mail size={19} /></span>CrescentSphere Mailer</div>
+      <div className="mailer-auth__brand"><span><img src="/crescentsphere-mark.svg" alt="" /></span>CrescentSphere Mailer</div>
       <div className="mailer-auth__pitch"><p className="eyebrow">Developer email infrastructure</p><h1>Ship transactional email with confidence.</h1><p>One focused console for sending, delivery events, domains, suppressions, and webhooks.</p><ul><li><Check size={15} />Safe test mode with simulated delivery</li><li><Check size={15} />SES-backed production sending</li><li><Check size={15} />Signed webhooks and delivery history</li></ul></div>
       <p className="mailer-auth__aside-footer"><ShieldCheck size={14} />Protected by Cloudflare and secure sessions</p>
     </aside>

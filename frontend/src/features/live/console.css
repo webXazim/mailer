@@ -27,7 +27,9 @@
 .mailer-auth__aside { background: radial-gradient(circle at 18% 12%,rgba(59,130,246,.2),transparent 30%),linear-gradient(145deg,#0f172a 0%,#111c35 56%,#172554 100%); color: white; display: flex; flex-direction: column; min-height: 100vh; overflow: hidden; padding: clamp(32px,4vw,56px); position: relative; }
 .mailer-auth__aside::after { border: 1px solid rgba(148,163,184,.14); border-radius: 50%; bottom: -180px; content: ''; height: 440px; position: absolute; right: -180px; width: 440px; }
 .mailer-auth__brand { align-items: center; display: flex; font-size: 14px; font-weight: 700; gap: 11px; letter-spacing: -.01em; position: relative; z-index: 1; }
-.mailer-auth__brand > span { align-items: center; background: #2563eb; border-radius: 9px; display: inline-flex; height: 36px; justify-content: center; width: 36px; }
+.mailer-auth__brand > span { align-items: center; background: #07090c; border-radius: 9px; display: inline-flex; height: 36px; justify-content: center; padding: 4px; width: 36px; }
+.mailer-auth__brand > span img,
+.brand__mark img { display: block; height: 100%; object-fit: contain; width: 100%; }
 .mailer-auth__pitch { margin: auto 0; max-width: 510px; position: relative; z-index: 1; }
 .mailer-auth__pitch .eyebrow { color: #93c5fd; margin-bottom: 18px; }
 .mailer-auth__pitch h1 { font-size: clamp(36px,4.2vw,58px); letter-spacing: -.045em; line-height: 1.02; max-width: 500px; }

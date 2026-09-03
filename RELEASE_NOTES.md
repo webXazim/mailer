@@ -1,10 +1,11 @@
-# Public beta
+# Production self-service update
 
 See [the current readiness assessment](CURRENT_READINESS.md) for remaining gaps
 identified in the follow-up review before relying on production delivery.
 
-This release turns the prototype console into a public developer-mailer beta.
-It is suitable for invited external testers after configuring the providers.
+This release turns the prototype console into a self-service developer mailer.
+Real delivery is available after configuring providers and granting the SES account
+production access in the configured region.
 
 ## Available workflows
 
@@ -38,7 +39,8 @@ held for operator reconciliation instead of automatically risking a duplicate.
 Content retention also applies when final delivery feedback never arrives.
 
 Migration `0015_public_signup.sql` adds verification tokens and per-workspace production
-approval. Existing workspaces are grandfathered into production access. Back up before deployment.
+access. Migration `0017_verified_domain_production_access.sql` unlocks production for
+workspaces with a verified sending domain. Back up before deployment.
 Keep existing DB/NATS/webhook master secrets stable across redeployments.
 
 ## Verification

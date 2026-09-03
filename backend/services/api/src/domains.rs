@@ -416,6 +416,16 @@ async fn refresh_verification(
         .bind(id)
         .execute(&state.db)
         .await?;
+    if verified {
+        sqlx::query(
+            "UPDATE workspaces SET production_enabled = true, updated_at = now() \
+             WHERE id = (SELECT workspace_id FROM domains WHERE id = $1) \
+             AND production_enabled = false",
+        )
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    }
     Ok((provider_verified, required_dns_verified))
 }
 
@@ -428,7 +438,11 @@ pub(crate) async fn run_verifier(state: AppState) {
     loop {
         timer.tick().await;
         let rows = match sqlx::query(
-            "SELECT id,name FROM domains WHERE status='pending' ORDER BY updated_at LIMIT 100",
+            "SELECT domain.id, domain.name FROM domains AS domain \
+             JOIN workspaces AS workspace ON workspace.id = domain.workspace_id \
+             WHERE domain.status = 'pending' \
+                OR (domain.status = 'verified' AND NOT workspace.production_enabled) \
+             ORDER BY domain.updated_at LIMIT 100",
         )
         .fetch_all(&state.db)
         .await

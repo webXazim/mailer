@@ -77,7 +77,7 @@ export function Authentication({ signedIn }: { signedIn: (session: Session) => v
           <div className="mailer-auth__links"><button className="text-link" onClick={() => navigate(mode === 'login' ? '/signup' : '/login')}>{mode === 'login' ? 'Create a free account' : 'Back to sign in'}</button>{mode === 'login' && <>{config.result?.data.passwordRecovery && <button className="text-link" onClick={() => navigate('/forgot-password')}>Forgot password?</button>}{config.result?.data.emailVerification && <button className="text-link" onClick={() => navigate('/resend-verification')}>Resend verification</button>}</>}</div>
         </>}
       </div>
-      <p className="mailer-auth__footnote">Public beta · New workspaces begin in safe test mode</p>
+      <p className="mailer-auth__footnote">New workspaces begin in safe test mode · Verify a domain to send in production</p>
     </section>
   </main>
 }

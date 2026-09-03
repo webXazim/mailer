@@ -134,7 +134,7 @@ def main():
         for path in ['/v1/domains', '/v1/webhooks', '/v1/workspace']:
             expect(200, request('GET', path, key=test_key))
         assert expect(200,request('GET','/v1/emails?limit=1',cookie=cookie))['hasMore']
-        print('PASS: verified public signup, production approval, sessions, tenant/scope/environment isolation, retrieval and idempotency', flush=True)
+        print('PASS: verified public signup, production access, sessions, tenant/scope/environment isolation, retrieval and idempotency', flush=True)
 
         for url in ['https://127.0.0.1/', 'https://[::1]/', 'https://[::ffff:127.0.0.1]/', 'http://hooks.example.com/']:
             expect(400, request('POST', '/v1/webhooks', {'url':url,'environment':'test','subscriptions':['email.delivery']}, cookie=cookie))

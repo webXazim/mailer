@@ -96,7 +96,7 @@ async fn send_email(
         return error(
             StatusCode::FORBIDDEN,
             "production_access_required",
-            "Production sending has not been approved for this workspace",
+            "Production sending requires a verified sending domain",
         );
     }
     let Some(idempotency_key) = headers

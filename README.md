@@ -88,7 +88,7 @@ type `code`, token authentication `client_secret_basic`, and required scopes
 https://mailer.crescentsphere.com/api/v1/dns-automation/cloudflare/callback
 ```
 
-Set the client URL to `https://mailer.crescentsphere.com`, complete Cloudflare's
+Set the client URL to `https://crescentsphere.com`, complete Cloudflare's
 publisher-domain TXT verification, promote the client to public, and place the client
 ID and secret at the top of `.env`. Mailer stores only a hashed, ten-minute OAuth
 state. It uses the granted access token to add missing records without overwriting
@@ -99,11 +99,10 @@ After deployment, create an account. A workspace is created
 automatically and starts in **Test**:
 send from `sender@sandbox.mailer.invalid`, create a test key, and inspect the resulting
 email/events. No domain or real recipient is needed for that simulation. Then add a
-domain you control, publish its ownership TXT/DKIM/MAIL FROM records, verify it, and
-ask the operator to approve the workspace, then use a **Production** key for real messages.
-Operators run `sh manage pending-workspaces` followed by
-`sh manage approve-workspace WORKSPACE_UUID`. SES sandbox accounts restrict recipients;
-request SES production access before unrestricted sending.
+domain you control and publish its ownership TXT/DKIM/MAIL FROM records. Mailer checks
+DNS and SES automatically. Once the domain is verified, the workspace can create a
+**Production** key for real messages. The Amazon SES account must have production access
+in the configured `AWS_REGION`; sandbox accounts restrict recipients.
 
 In the Cloudflare dashboard, configure the supplied tunnel's published application:
 
@@ -183,7 +182,8 @@ it is not an SMTP server or a replacement for SES.
 
 The console supports public registration protected by Cloudflare Turnstile. Account email
 delivery is disabled by default, so signup creates a session immediately. Email verification
-and password recovery can be enabled later. New workspaces cannot send production email until operator approval. MFA, billing,
+and password recovery can be enabled later. New workspaces begin in Test and unlock production
+after a sending domain is verified. MFA, billing,
 templates, and team management are not exposed. See [release notes](RELEASE_NOTES.md)
 and the console's API guide for the supported contract.
 
@@ -192,7 +192,7 @@ Before customer use:
 - Rotate the tunnel token shared in chat, update only the token in `.env`, and
   run `sh manage deploy`. Do not regenerate DB/NATS/webhook secrets on updates.
 - Pin `CLOUDFLARED_IMAGE` to a reviewed version/digest instead of `latest`.
-- Review SES production access, verified domains, IAM permissions and quotas.
+- Confirm SES production access in `AWS_REGION`, verified domains, IAM permissions and quotas.
 - Configure encrypted offsite backups and rehearse recovery. See the backend
   recovery instructions; PostgreSQL backups alone do not back up NATS or R2.
 - Run `sh manage healthcheck` and a complete real send/event/webhook test.

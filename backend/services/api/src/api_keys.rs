@@ -84,7 +84,7 @@ async fn create_key(
         return error(
             StatusCode::FORBIDDEN,
             "production_access_required",
-            "Production sending has not been approved for this workspace",
+            "Verify a sending domain before creating a production API key",
         );
     }
     let expires_in_days = input.expires_in_days.unwrap_or(0);
@@ -184,7 +184,7 @@ async fn rotate_key(
         return error(
             StatusCode::FORBIDDEN,
             "production_access_required",
-            "Production sending has not been approved for this workspace",
+            "Production access requires a verified sending domain",
         );
     }
     let secret = format!(

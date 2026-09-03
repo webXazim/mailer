@@ -220,14 +220,14 @@ AWS policy starting points are under `backend/deploy/aws/`; replace account and
 configuration-set placeholders and review the effective permissions in AWS.
 
 
-## Public beta API contract
+## API contract
 
 - `POST /v1/auth/signup` accepts `email`, `password`, `first_name`, `last_name`, and
   `turnstile_token`. Production validates Turnstile server-side. With account email delivery
   disabled it creates a session immediately; when enabled it queues a one-time verification
   link. The workspace name is created automatically.
-- New workspaces can create test keys and simulate delivery. Production API keys and
-  production submissions require operator approval through `sh manage approve-workspace`.
+- New workspaces can create test keys and simulate delivery. Verifying a sending domain
+  automatically unlocks production API keys and submissions for that workspace.
 - `GET /v1/emails?limit=25&offset=0&environment=test` lists messages. Keys only see
   their environment; a console session can select either. `GET /v1/emails/{id}` returns
   status, recipients, up to 100 latest events, metadata, and retained body content.

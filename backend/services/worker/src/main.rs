@@ -53,11 +53,22 @@ async fn main() -> anyhow::Result<()> {
         )
         .build();
     let ses = aws_sdk_sesv2::Client::from_conf(ses_config);
+    if settings.auth_email_delivery_enabled
+        && settings.account_email_from.is_some()
+        && settings
+            .account_email_api_key
+            .as_deref()
+            .is_none_or(|key| !key.starts_with("cs_live_"))
+    {
+        anyhow::bail!("AUTH_EMAIL_DELIVERY_ENABLED=true requires a live ACCOUNT_EMAIL_API_KEY");
+    }
     let (shutdown, stop) = tokio::sync::watch::channel(false);
     let mut account_mail = tokio::spawn(account_mail::run(
         db.clone(),
         ses.clone(),
         settings.account_email_from.clone(),
+        settings.internal_api_url.clone(),
+        settings.account_email_api_key.clone(),
         stop.clone(),
     ));
     let object_store = storage::ObjectStore::from_settings(&settings).await?;

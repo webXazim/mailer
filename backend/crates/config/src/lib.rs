@@ -16,6 +16,7 @@ pub struct Settings {
     pub aws_region: String,
     pub ses_configuration_set: Option<String>,
     pub account_email_from: Option<String>,
+    pub account_email_api_key: Option<String>,
     pub auth_email_delivery_enabled: bool,
     pub turnstile_site_key: Option<String>,
     pub turnstile_secret_key: Option<String>,
@@ -60,6 +61,7 @@ impl Settings {
         let aws_region = env::var("AWS_REGION").unwrap_or_else(|_| "ap-southeast-1".into());
         let ses_configuration_set = optional("SES_CONFIGURATION_SET");
         let account_email_from = optional("ACCOUNT_EMAIL_FROM");
+        let account_email_api_key = optional("ACCOUNT_EMAIL_API_KEY");
         let auth_email_delivery_enabled = parse_bool("AUTH_EMAIL_DELIVERY_ENABLED", false)?;
         let turnstile_site_key = optional("TURNSTILE_SITE_KEY");
         let turnstile_secret_key = optional("TURNSTILE_SECRET_KEY");
@@ -214,6 +216,7 @@ impl Settings {
             aws_region,
             ses_configuration_set,
             account_email_from,
+            account_email_api_key,
             auth_email_delivery_enabled,
             turnstile_site_key,
             turnstile_secret_key,

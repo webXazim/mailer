@@ -72,8 +72,10 @@ Additional values at the top of `.env`:
   publishes to your SNS topic. Every production developer send selects it.
 - `AUTH_EMAIL_DELIVERY_ENABLED`: leave `false` to let new users sign in immediately;
   set `true` after verification and password-recovery email delivery is ready.
-- `ACCOUNT_EMAIL_FROM`: an SES-verified sender required only when
-  `AUTH_EMAIL_DELIVERY_ENABLED=true`.
+- `ACCOUNT_EMAIL_API_KEY`: a production (`cs_live_...`) Mailer key with only
+  `emails:send`, used by the worker to submit account email through Mailer's own API.
+- `ACCOUNT_EMAIL_FROM`: a sender under a verified Mailer domain, required when
+  `AUTH_EMAIL_DELIVERY_ENABLED=true`. Single-quote display-name values.
 - `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY`: create a Cloudflare Turnstile
   widget for `mailer.crescentsphere.com`. The backend validates every public signup.
 - `CLOUDFLARE_OAUTH_CLIENT_ID` and `CLOUDFLARE_OAUTH_CLIENT_SECRET`: enable the

@@ -123,7 +123,13 @@ separate DLQ. Subscribe the queue to the topic with raw message delivery
 disabled, permit only that topic to call `sqs:SendMessage`, and configure the
 SES configuration set to publish delivery, bounce, complaint, reject,
 rendering-failure, open, and click events to the topic. Enter the final queue
-URL and exact topic ARN as `SES_EVENTS_QUEUE_URL` and `SES_EVENTS_TOPIC_ARN`. Set `SES_CONFIGURATION_SET` to this configuration-set name and ensure the worker IAM policy includes its ARN. Leave `AUTH_EMAIL_DELIVERY_ENABLED=false` until account-email delivery is ready. When enabling it, set `ACCOUNT_EMAIL_FROM` to an SES-verified sender for verification and password-reset emails.
+URL and exact topic ARN as `SES_EVENTS_QUEUE_URL` and `SES_EVENTS_TOPIC_ARN`. Set
+`SES_CONFIGURATION_SET` to this configuration-set name and ensure the worker IAM policy
+includes its ARN. For account email, create a production Mailer key with only
+`emails:send`, set it as `ACCOUNT_EMAIL_API_KEY`, set `ACCOUNT_EMAIL_FROM` to an address
+under a verified domain, and enable `AUTH_EMAIL_DELIVERY_ENABLED`. The worker submits
+verification and password-reset email to the internal Mailer API; normal delivery and
+SES event processing then apply.
 
 Provide the `API_AWS_*` and `WORKER_AWS_*` credentials only through the VPS
 secret environment. Use separate IAM users: the API identity manages SES
@@ -261,9 +267,10 @@ tags, billing, MFA, and team administration are deferred.
 
 ## Recovery and retention
 
-Password-reset requests enqueue expiring messages in `account_emails`. The worker sends
-them from `ACCOUNT_EMAIL_FROM`, clears the raw link on success/failure/expiry, and only
-retries definite throttling responses. Users can request another link after failure.
+Password-reset requests enqueue expiring messages in `account_emails`. The worker submits
+them through Mailer's internal API using `ACCOUNT_EMAIL_API_KEY` and
+`ACCOUNT_EMAIL_FROM`, clears the raw link after acceptance/failure/expiry, and retries
+transient API failures. Users can request another link after failure.
 Reset completion invalidates outstanding reset tokens and all existing sessions.
 
 Failed or uncertain developer sends are visible in email details with `lastError` and

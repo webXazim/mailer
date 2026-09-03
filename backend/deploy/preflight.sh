@@ -14,7 +14,10 @@ for name in CLOUDFLARE_TUNNEL_TOKEN TURNSTILE_SITE_KEY TURNSTILE_SECRET_KEY POST
     case "$value" in *REPLACE*|*ACCOUNT_ID*|*change-me*|*mailer-development*) fail "$name still contains a placeholder." ;; esac
 done
 case "${AUTH_EMAIL_DELIVERY_ENABLED:-false}" in
-    true) test -n "${ACCOUNT_EMAIL_FROM:-}" || fail 'ACCOUNT_EMAIL_FROM is required when AUTH_EMAIL_DELIVERY_ENABLED=true.' ;;
+    true)
+        test -n "${ACCOUNT_EMAIL_FROM:-}" || fail 'ACCOUNT_EMAIL_FROM is required when AUTH_EMAIL_DELIVERY_ENABLED=true.'
+        case "${ACCOUNT_EMAIL_API_KEY:-}" in cs_live_*) ;; *) fail 'A live ACCOUNT_EMAIL_API_KEY is required when AUTH_EMAIL_DELIVERY_ENABLED=true.' ;; esac
+        ;;
     false) ;;
     *) fail 'AUTH_EMAIL_DELIVERY_ENABLED must be true or false.' ;;
 esac

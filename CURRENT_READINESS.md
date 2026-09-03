@@ -29,7 +29,8 @@ change application behavior, or rerun the earlier test suites.
   complaint feedback, suppression, and a signed HTTPS webhook received and verified
   by the consuming application. Verify retry after a transient receiver failure.
 - Upload/send/read an attachment through the real object store and confirm retention.
-- Deliver a password-reset email through SES and complete the browser reset flow.
+- Deliver a password-reset email through Mailer's live API and SES, then complete the
+  browser reset flow.
 - Deploy behind the real tunnel; check HTTPS cookies, forwarding, private-route
   blocking, resource headroom beside Docgen/Messenger, and a normal redeploy.
 - Exercise database/NATS interruptions, provider throttling, worker termination

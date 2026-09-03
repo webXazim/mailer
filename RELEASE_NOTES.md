@@ -71,7 +71,7 @@ python backend/deploy/tests/integration.py
 ## Before using production keys
 
 1. Fill provider credentials at the top of `.env`, including the SES configuration
-   set, a verified `ACCOUNT_EMAIL_FROM`, and Cloudflare Turnstile keys.
+   set, `ACCOUNT_EMAIL_API_KEY`, a verified `ACCOUNT_EMAIL_FROM`, and Turnstile keys.
 2. Configure SES/SNS/SQS event delivery, IAM, R2 retention, and sender DNS. Review
    SES sandbox/production access and account sending quotas.
 3. Run `sh manage deploy` and configure the Cloudflare route to `http://api:8081`.

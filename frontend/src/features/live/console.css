@@ -50,6 +50,7 @@
 .mailer-auth__form .field > span { color: #334155; font-size: 12px; }
 .mailer-auth__form .field input { border-color: #cbd5e1; border-radius: 8px; font-size: 13px; min-height: 44px; padding: 10px 12px; transition: border-color .15s,box-shadow .15s; }
 .mailer-auth__form .field input::placeholder { color: #a1adbd; }
+.mailer-auth__form .field input.mailer-auth__code { font-size: 20px; font-variant-numeric: tabular-nums; font-weight: 650; letter-spacing: .38em; text-align: center; }
 .mailer-auth__form .field small { color: #7c8ba1; font-size: 10px; line-height: 1.5; }
 .mailer-auth__form > .button { border-radius: 8px; box-shadow: 0 4px 12px rgba(37,99,235,.2); min-height: 44px; width: 100%; }
 .mailer-auth__consent { align-items: flex-start; color: #526277; gap: 10px; line-height: 1.55; }

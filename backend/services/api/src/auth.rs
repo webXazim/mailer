@@ -1,5 +1,7 @@
 use super::{emails::client_ip, AppState};
-use ::auth::{generate_token, hash_password, hash_token, verify_password};
+use ::auth::{
+    generate_token, generate_verification_code, hash_password, hash_token, verify_password,
+};
 use axum::{
     extract::{ConnectInfo, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
@@ -36,7 +38,8 @@ pub struct SignupRequest {
 
 #[derive(Deserialize)]
 pub struct VerificationRequest {
-    pub token: String,
+    pub email: String,
+    pub code: String,
 }
 
 #[derive(Deserialize)]
@@ -237,8 +240,8 @@ async fn signup(
         );
     }
     if state.auth_email_delivery_enabled {
-        let verification_token = generate_token();
-        if queue_verification(&state, &mut tx, user_id, &email, &verification_token)
+        let verification_code = generate_verification_code();
+        if queue_verification(&mut tx, user_id, &email, &verification_code)
             .await
             .is_err()
         {
@@ -280,27 +283,21 @@ async fn signup(
 }
 
 async fn queue_verification(
-    state: &AppState,
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
     email: &str,
-    token: &str,
+    code: &str,
 ) -> Result<(), sqlx::Error> {
-    let link = format!(
-        "{}/#/verify-email?token={}",
-        state.console_origin.trim_end_matches('/'),
-        token
-    );
-    let body = format!("Verify your CrescentSphere Mailer account using this link (valid for 24 hours):\n\n{link}\n\nIf you did not create this account, ignore this email.");
+    let body = format!("Your CrescentSphere Mailer verification code is:\n\n{code}\n\nThis code expires in 15 minutes. If you did not create this account, ignore this email.");
     sqlx::query(
         "UPDATE email_verification_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL",
     )
     .bind(user_id)
     .execute(&mut **tx)
     .await?;
-    sqlx::query("INSERT INTO email_verification_tokens (user_id,token_hash,expires_at) VALUES ($1,$2,now()+interval '24 hours')")
-        .bind(user_id).bind(hash_token(token)).execute(&mut **tx).await?;
-    sqlx::query("INSERT INTO account_emails (recipient,subject,body,expires_at) VALUES ($1,'Verify your Mailer account',$2,now()+interval '24 hours')")
+    sqlx::query("INSERT INTO email_verification_tokens (user_id,token_hash,expires_at) VALUES ($1,$2,now()+interval '15 minutes')")
+        .bind(user_id).bind(hash_token(code)).execute(&mut **tx).await?;
+    sqlx::query("INSERT INTO account_emails (recipient,subject,body,expires_at) VALUES ($1,'Your Mailer verification code',$2,now()+interval '15 minutes')")
         .bind(email).bind(body).execute(&mut **tx).await?;
     Ok(())
 }
@@ -312,15 +309,21 @@ async fn complete_verification(
     Json(input): Json<VerificationRequest>,
 ) -> Response {
     let ip = client_ip(peer.ip(), &headers, state.trust_proxy_headers);
-    if let Err(response) = enforce_auth_limit(&state, &format!("verify:ip:{ip}"), 20).await {
+    if let Err(response) = enforce_auth_limit(&state, &format!("verify:ip:{ip}"), 10).await {
         return response;
     }
-    if input.token.is_empty() || input.token.len() > 256 {
+    let email = input.email.trim().to_lowercase();
+    let code = input.code.trim();
+    if !valid_email(&email) || code.len() != 6 || !code.bytes().all(|value| value.is_ascii_digit())
+    {
         return error(
             StatusCode::BAD_REQUEST,
-            "invalid_verification_token",
-            "Verification link is invalid or expired",
+            "invalid_verification_code",
+            "Verification code is invalid or expired",
         );
+    }
+    if let Err(response) = enforce_auth_limit(&state, &format!("verify:email:{email}"), 5).await {
+        return response;
     }
     let mut tx = match state.db.begin().await {
         Ok(tx) => tx,
@@ -332,10 +335,10 @@ async fn complete_verification(
             )
         }
     };
-    let user_id = match sqlx::query_scalar::<_, Uuid>("SELECT user_id FROM email_verification_tokens WHERE token_hash=$1 AND used_at IS NULL AND expires_at>now() FOR UPDATE")
-        .bind(hash_token(&input.token)).fetch_optional(&mut *tx).await {
+    let user_id = match sqlx::query_scalar::<_, Uuid>("SELECT verification.user_id FROM email_verification_tokens verification JOIN users user_account ON user_account.id=verification.user_id WHERE lower(user_account.email)=$1 AND verification.token_hash=$2 AND verification.used_at IS NULL AND verification.expires_at>now() FOR UPDATE OF verification")
+        .bind(&email).bind(hash_token(code)).fetch_optional(&mut *tx).await {
         Ok(Some(id)) => id,
-        _ => return error(StatusCode::BAD_REQUEST, "invalid_verification_token", "Verification link is invalid or expired"),
+        _ => return error(StatusCode::BAD_REQUEST, "invalid_verification_code", "Verification code is invalid or expired"),
     };
     let session_token = generate_token();
     let failed = sqlx::query("UPDATE users SET email_verified_at=COALESCE(email_verified_at,now()),updated_at=now() WHERE id=$1")
@@ -401,8 +404,8 @@ async fn resend_verification(
         .await
         {
             if let Ok(mut tx) = state.db.begin().await {
-                let token = generate_token();
-                if queue_verification(&state, &mut tx, user_id, &email, &token)
+                let code = generate_verification_code();
+                if queue_verification(&mut tx, user_id, &email, &code)
                     .await
                     .is_ok()
                 {

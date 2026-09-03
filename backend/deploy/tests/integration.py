@@ -84,12 +84,13 @@ def main():
         assert response[0] in (200, 201), (response[0], response[1])
         assert response[1]['data']['verificationRequired'] and response[1]['data']['verificationEmailStatus'] == 'queued' and response[2] is None
         expect(403, request('POST', '/v1/auth/login', {'email': email, 'password': PASSWORD}))
-        first_token = re.search(r'token=([A-Za-z0-9_-]+)', sql(f"SELECT body FROM account_emails WHERE recipient='{email}' ORDER BY updated_at DESC LIMIT 1;")).group(1)
+        first_code = re.search(r'\b(\d{6})\b', sql(f"SELECT body FROM account_emails WHERE recipient='{email}' ORDER BY updated_at DESC LIMIT 1;")).group(1)
         expect(200, request('POST', '/v1/auth/email-verification/resend', {'email': email}))
-        token = re.search(r'token=([A-Za-z0-9_-]+)', sql(f"SELECT body FROM account_emails WHERE recipient='{email}' ORDER BY updated_at DESC LIMIT 1;")).group(1)
-        assert token != first_token
-        expect(400, request('POST', '/v1/auth/email-verification/complete', {'token': first_token}))
-        verified = request('POST', '/v1/auth/email-verification/complete', {'token': token})
+        code = re.search(r'\b(\d{6})\b', sql(f"SELECT body FROM account_emails WHERE recipient='{email}' ORDER BY updated_at DESC LIMIT 1;")).group(1)
+        assert code != first_code
+        expect(400, request('POST', '/v1/auth/email-verification/complete', {'email': email, 'code': first_code}))
+        expect(400, request('POST', '/v1/auth/email-verification/complete', {'email': 'wrong-' + email, 'code': code}))
+        verified = request('POST', '/v1/auth/email-verification/complete', {'email': email, 'code': code})
         return expect(200, verified)['data'], verified[2]
 
     def send(body, key, idem):

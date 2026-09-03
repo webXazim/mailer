@@ -5,7 +5,7 @@ use argon2::{
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use hmac::{Hmac, Mac};
-use rand::RngCore;
+use rand::{Rng, RngCore};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -31,6 +31,10 @@ pub fn generate_token() -> String {
     let mut bytes = [0_u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
+}
+
+pub fn generate_verification_code() -> String {
+    format!("{:06}", rand::thread_rng().gen_range(0..1_000_000_u32))
 }
 
 pub fn hash_token(token: &str) -> Vec<u8> {
@@ -166,6 +170,15 @@ mod tests {
         assert_ne!(first, second);
         assert_ne!(hash_token(&first), hash_token(&second));
         assert_eq!(hash_token(&first).len(), 32);
+    }
+
+    #[test]
+    fn verification_codes_are_six_digits() {
+        for _ in 0..100 {
+            let code = generate_verification_code();
+            assert_eq!(code.len(), 6);
+            assert!(code.bytes().all(|value| value.is_ascii_digit()));
+        }
     }
 
     #[test]

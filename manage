@@ -120,7 +120,31 @@ case "$command" in
         recipient=${1:-}
         test -n "$recipient" || { echo "Usage: sh manage account-email-status EMAIL" >&2; exit 2; }
         load_environment
-        production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --variable=recipient="$recipient" --variable=ON_ERROR_STOP=1 --command "SELECT account_email.created_at AS requested_at,account_email.status AS auth_status,account_email.attempts AS auth_attempts,account_email.last_error AS auth_error,mail.status AS delivery_status,mail.processing_attempts AS delivery_attempts,mail.last_error AS delivery_error,latest_event.event_type AS latest_event,latest_event.occurred_at AS event_time,account_email.mailer_email_id FROM account_emails account_email LEFT JOIN emails mail ON mail.id=account_email.mailer_email_id LEFT JOIN LATERAL (SELECT event_type,occurred_at FROM delivery_events WHERE email_id=mail.id ORDER BY occurred_at DESC LIMIT 1) latest_event ON true WHERE lower(account_email.recipient)=lower(:'recipient') ORDER BY account_email.created_at DESC LIMIT 10;"
+        production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --variable=recipient="$recipient" --variable=ON_ERROR_STOP=1 <<'SQL'
+SELECT
+    account_email.created_at AS requested_at,
+    account_email.status AS auth_status,
+    account_email.attempts AS auth_attempts,
+    account_email.last_error AS auth_error,
+    mail.status AS delivery_status,
+    mail.processing_attempts AS delivery_attempts,
+    mail.last_error AS delivery_error,
+    latest_event.event_type AS latest_event,
+    latest_event.occurred_at AS event_time,
+    account_email.mailer_email_id
+FROM account_emails account_email
+LEFT JOIN emails mail ON mail.id = account_email.mailer_email_id
+LEFT JOIN LATERAL (
+    SELECT event_type, occurred_at
+    FROM delivery_events
+    WHERE email_id = mail.id
+    ORDER BY occurred_at DESC
+    LIMIT 1
+) latest_event ON true
+WHERE lower(account_email.recipient) = lower(:'recipient')
+ORDER BY account_email.created_at DESC
+LIMIT 10;
+SQL
         ;;
     healthcheck)
         load_environment

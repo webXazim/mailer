@@ -5,7 +5,7 @@ import { api } from '../../lib/api/client'
 import { Envelope, Session, useAction, useResource, Field, ErrorNotice, Submit } from './shared'
 
 type AuthConfig = { emailVerification: boolean; passwordRecovery: boolean; turnstileSiteKey?: string }
-type SignupResult = { verificationRequired: boolean; email: string; session?: Session }
+type SignupResult = { verificationRequired: boolean; verificationEmailStatus?: 'queued'; email: string; session?: Session }
 type TurnstileApi = { render: (element: HTMLElement, options: Record<string, unknown>) => string; remove: (id: string) => void }
 declare global { interface Window { turnstile?: TurnstileApi } }
 
@@ -43,14 +43,14 @@ export function Authentication({ signedIn }: { signedIn: (session: Session) => v
     event.preventDefault()
     const data = new FormData(event.currentTarget), value = (name: string) => String(data.get(name) ?? '')
     await action.run(async () => {
-      if (mode === 'forgot') { await api.post('/v1/auth/password-reset/request', { email: value('email') }); setNotice('If this account exists, reset instructions have been queued. Check your inbox and spam folder.'); return }
-      if (mode === 'resend') { await api.post('/v1/auth/email-verification/resend', { email: value('email') }); setNotice('If this unverified account exists, a new link has been queued. Check your inbox and spam folder.'); return }
+      if (mode === 'forgot') { await api.post('/v1/auth/password-reset/request', { email: value('email') }); setNotice('Request accepted. If this account exists, reset instructions were queued. Delivery is not yet confirmed.'); return }
+      if (mode === 'resend') { await api.post('/v1/auth/email-verification/resend', { email: value('email') }); setNotice('Request accepted. If this unverified account exists, a new link was queued. Delivery is not yet confirmed.'); return }
       if (mode === 'reset') { await api.post('/v1/auth/password-reset/complete', { token: new URLSearchParams(location.search).get('token') ?? '', password: value('password') }); window.dispatchEvent(new Event('mailer:session-expired')); setNotice('Password updated. You can now sign in.'); return }
       if (mode === 'signup') {
         if (config.result?.data.turnstileSiteKey && !turnstileToken) throw new Error('Complete the security check first.')
         const response = await api.post<Envelope<SignupResult>>('/v1/auth/signup', { email: value('email'), password: value('password'), first_name: value('first'), last_name: value('last'), turnstile_token: turnstileToken })
         if (response.data.session) { signedIn(response.data.session); navigate('/', { replace: true }); return }
-        setNotice('Account created. Check your inbox and spam folder for the verification link.'); return
+        setNotice(response.data.verificationEmailStatus === 'queued' ? 'Account created. Your verification email is queued; delivery is not yet confirmed. If it does not arrive, use Resend verification.' : 'Account created. Verification is required before sign in.'); return
       }
       const response = await api.post<Envelope<Session>>('/v1/auth/login', { email: value('email'), password: value('password'), remember: true }); signedIn(response.data); navigate('/', { replace: true })
     })
@@ -72,7 +72,7 @@ export function Authentication({ signedIn }: { signedIn: (session: Session) => v
             {mode !== 'reset' && <Field label="Email address"><input name="email" type="email" autoComplete="email" placeholder="you@company.com" required maxLength={254} /></Field>}
             {!['forgot', 'resend'].includes(mode) && <Field label="Password"><input name="password" type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} placeholder={mode === 'login' ? 'Enter your password' : 'At least 12 characters'} minLength={mode === 'login' ? 1 : 12} maxLength={256} required />{mode === 'signup' && <small>Use 12 or more characters. A passphrase works well.</small>}</Field>}
             {mode === 'signup' && <><label className="checkbox-field mailer-auth__consent"><input type="checkbox" required /><span>I will send only permission-based transactional email and handle bounces and complaints.</span></label><Turnstile siteKey={config.result?.data.turnstileSiteKey} token={setTurnstileToken} /></>}
-            <ErrorNotice error={action.error || config.error} />{notice && <p className="live-notice" role="status">{notice}</p>}<Submit busy={action.busy}>{mode === 'signup' ? 'Create account' : mode === 'forgot' ? 'Send reset instructions' : mode === 'resend' ? 'Resend verification link' : mode === 'reset' ? 'Update password' : 'Sign in'}</Submit>
+            <ErrorNotice error={action.error || config.error} />{notice && <p className={`live-notice ${['signup', 'forgot', 'resend'].includes(mode) ? 'live-notice--pending' : ''}`} role="status">{notice}</p>}<Submit busy={action.busy}>{mode === 'signup' ? 'Create account' : mode === 'forgot' ? 'Send reset instructions' : mode === 'resend' ? 'Resend verification link' : mode === 'reset' ? 'Update password' : 'Sign in'}</Submit>
           </form>
           <div className="mailer-auth__links"><button className="text-link" onClick={() => navigate(mode === 'login' ? '/signup' : '/login')}>{mode === 'login' ? 'Create a free account' : 'Back to sign in'}</button>{mode === 'login' && <>{config.result?.data.passwordRecovery && <button className="text-link" onClick={() => navigate('/forgot-password')}>Forgot password?</button>}{config.result?.data.emailVerification && <button className="text-link" onClick={() => navigate('/resend-verification')}>Resend verification</button>}</>}</div>
         </>}

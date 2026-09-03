@@ -82,7 +82,7 @@ def main():
         response = request('POST', '/v1/auth/signup', {'email': email, 'password': PASSWORD, 'first_name': 'Integration',
                            'last_name': 'Owner', 'turnstile_token': 'XXXX.DUMMY.TOKEN.XXXX'})
         assert response[0] in (200, 201), (response[0], response[1])
-        assert response[1]['data']['verificationRequired'] and response[2] is None
+        assert response[1]['data']['verificationRequired'] and response[1]['data']['verificationEmailStatus'] == 'queued' and response[2] is None
         expect(403, request('POST', '/v1/auth/login', {'email': email, 'password': PASSWORD}))
         first_token = re.search(r'token=([A-Za-z0-9_-]+)', sql(f"SELECT body FROM account_emails WHERE recipient='{email}' ORDER BY updated_at DESC LIMIT 1;")).group(1)
         expect(200, request('POST', '/v1/auth/email-verification/resend', {'email': email}))

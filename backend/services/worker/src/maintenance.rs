@@ -15,7 +15,7 @@ async fn clean(pool: &db::DbPool) -> anyhow::Result<()> {
     // Uncertain provider attempts must be reviewed, never blindly resent.
     sqlx::query("WITH stale AS (UPDATE emails SET status='failed',completed_at=now(),processing_started_at=NULL,last_error='Stale provider attempt; manual review required' WHERE status='processing' AND processing_started_at<now()-interval '15 minutes' RETURNING id) INSERT INTO delivery_dead_letters(email_id,reason,payload) SELECT id,'Stale provider attempt; manual review required','{}'::jsonb FROM stale").execute(pool).await?;
     sqlx::query("UPDATE account_emails SET status='failed',body='',last_error='Expired or interrupted account email',updated_at=now() WHERE (status='processing' AND updated_at<now()-interval '5 minutes') OR (status='queued' AND expires_at<now())").execute(pool).await?;
-    sqlx::query("DELETE FROM account_emails WHERE updated_at<now()-interval '7 days' AND status IN ('sent','failed')").execute(pool).await?;
+    sqlx::query("DELETE FROM account_emails WHERE updated_at<now()-interval '7 days' AND status IN ('submitted','sent','failed')").execute(pool).await?;
     sqlx::query("DELETE FROM password_reset_tokens WHERE expires_at<now()-interval '1 day'")
         .execute(pool)
         .await?;

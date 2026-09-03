@@ -8,6 +8,7 @@
 .live-panel__body p { line-height: 1.6; }
 .live-error { padding: 12px 16px; background: #fff0ef; color: #a62b25; border: 1px solid #efc7c4; border-radius: 8px; overflow-wrap: anywhere; }
 .live-notice { padding: 12px 16px; background: #effaf4; color: #176b42; border: 1px solid #c0e6ce; border-radius: 8px; }
+.live-notice--pending { background: #f4f7fb; color: #41536f; border-color: #ccd6e5; }
 .live-actions { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
 .live-inline-form { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; }
 .live-inline-form .field { flex: 1; min-width: 220px; }

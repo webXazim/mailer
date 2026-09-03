@@ -267,7 +267,7 @@ async fn signup(
         );
     }
     let Some(session_token) = session_token else {
-        return Json(json!({"data": {"verificationRequired": true, "email": email}}))
+        return Json(json!({"data": {"verificationRequired": true, "verificationEmailStatus": "queued", "email": email}}))
             .into_response();
     };
     match load_context(&state, &session_token).await {

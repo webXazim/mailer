@@ -25,6 +25,11 @@ enum MailerFailure {
     Permanent(String),
 }
 
+enum AccountDelivery {
+    Submitted(Uuid),
+    Sent(String),
+}
+
 pub async fn run(
     pool: db::DbPool,
     ses: aws_sdk_sesv2::Client,
@@ -61,9 +66,11 @@ pub async fn run(
                 &client, &api_url, key, id, from, &recipient, &subject, &body,
             )
             .await
+            .map(AccountDelivery::Submitted)
         } else {
             send_via_ses(&ses, from, &recipient, &subject, &body)
                 .await
+                .map(AccountDelivery::Sent)
                 .map_err(|failure| match failure {
                     ProviderFailure::Retryable(reason) | ProviderFailure::Ambiguous(reason) => {
                         MailerFailure::Retryable(reason)
@@ -73,7 +80,10 @@ pub async fn run(
         };
 
         match outcome {
-            Ok(message_id) => {
+            Ok(AccountDelivery::Submitted(email_id)) => {
+                sqlx::query("UPDATE account_emails SET status='submitted',body='',mailer_email_id=$2,updated_at=now() WHERE id=$1").bind(id).bind(email_id).execute(&pool).await?;
+            }
+            Ok(AccountDelivery::Sent(message_id)) => {
                 sqlx::query("UPDATE account_emails SET status='sent',body='',provider_message_id=$2,updated_at=now() WHERE id=$1").bind(id).bind(message_id).execute(&pool).await?;
             }
             Err(failure) => {
@@ -97,7 +107,7 @@ async fn send_via_mailer<C>(
     recipient: &str,
     subject: &str,
     text: &str,
-) -> Result<String, MailerFailure>
+) -> Result<Uuid, MailerFailure>
 where
     C: hyper_util::client::legacy::connect::Connect + Clone + Send + Sync + 'static,
 {
@@ -141,7 +151,7 @@ where
         .to_bytes();
     let response: MailerResponse = serde_json::from_slice(&bytes)
         .map_err(|error| MailerFailure::Retryable(format!("Invalid Mailer response: {error}")))?;
-    Ok(response.data.id.to_string())
+    Ok(response.data.id)
 }
 
 async fn send_via_ses(

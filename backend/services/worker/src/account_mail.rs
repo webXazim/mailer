@@ -27,6 +27,14 @@ enum AccountDelivery {
     Submitted(Uuid),
 }
 
+struct AccountMessage<'a> {
+    id: Uuid,
+    from: &'a str,
+    recipient: &'a str,
+    subject: &'a str,
+    text: &'a str,
+}
+
 pub async fn run(
     pool: db::DbPool,
     from: Option<String>,
@@ -59,7 +67,16 @@ pub async fn run(
 
         let outcome = if let Some(key) = api_key.as_deref() {
             send_via_mailer(
-                &client, &api_url, key, id, from, &recipient, &subject, &body,
+                &client,
+                &api_url,
+                key,
+                AccountMessage {
+                    id,
+                    from,
+                    recipient: &recipient,
+                    subject: &subject,
+                    text: &body,
+                },
             )
             .await
             .map(AccountDelivery::Submitted)
@@ -89,20 +106,16 @@ async fn send_via_mailer<C>(
     client: &Client<C, Full<Bytes>>,
     api_url: &str,
     api_key: &str,
-    id: Uuid,
-    from: &str,
-    recipient: &str,
-    subject: &str,
-    text: &str,
+    message: AccountMessage<'_>,
 ) -> Result<Uuid, MailerFailure>
 where
     C: hyper_util::client::legacy::connect::Connect + Clone + Send + Sync + 'static,
 {
     let payload = serde_json::to_vec(&serde_json::json!({
-        "from": from,
-        "to": [recipient],
-        "subject": subject,
-        "text": text,
+        "from": message.from,
+        "to": [message.recipient],
+        "subject": message.subject,
+        "text": message.text,
         "environment": "production"
     }))
     .map_err(|error| MailerFailure::Permanent(error.to_string()))?;
@@ -110,7 +123,7 @@ where
     let request = Request::post(endpoint)
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {api_key}"))
-        .header("idempotency-key", format!("account-email-{id}"))
+        .header("idempotency-key", format!("account-email-{}", message.id))
         .body(Full::new(Bytes::from(payload)))
         .map_err(|error| MailerFailure::Permanent(error.to_string()))?;
     let response = tokio::time::timeout(Duration::from_secs(10), client.request(request))

@@ -112,7 +112,9 @@ workspace can create a **Production** key for real messages. Domain provisioning
 SES or the independent Stalwart JMAP management API. SES delivery requires production
 access in the configured `AWS_REGION`; SMTP delivery requires an authenticated,
 production-ready relay. See [Stalwart domain provisioning](STALWART_DOMAIN_PROVISIONING.md)
-and [Stalwart delivery events](STALWART_EVENT_INGESTION.md).
+and [Stalwart delivery events](STALWART_EVENT_INGESTION.md). Staged provider
+cohorts, pause controls, caps, and rollback are covered in
+[Delivery routing and rollback](DELIVERY_ROUTING.md).
 
 In the Cloudflare dashboard, configure the supplied tunnel's published application:
 

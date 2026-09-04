@@ -34,19 +34,15 @@ case "${DOMAIN_PROVIDER:-}" in
     *) fail 'DOMAIN_PROVIDER must be ses or stalwart.' ;;
 esac
 case "${DELIVERY_PROVIDER:-ses}" in
-    ses)
-        for name in WORKER_AWS_ACCESS_KEY_ID WORKER_AWS_SECRET_ACCESS_KEY SES_EVENTS_QUEUE_URL SES_EVENTS_TOPIC_ARN SES_CONFIGURATION_SET; do
-            eval "value=\${$name:-}"
-            test -n "$value" || fail "$name is required when DELIVERY_PROVIDER=ses."
-            case "$value" in *REPLACE*|*ACCOUNT_ID*|*change-me*) fail "$name still contains a placeholder." ;; esac
-        done
-        ;;
-    smtp)
-        for name in SMTP_HOST SMTP_USERNAME SMTP_PASSWORD SMTP_HELO_NAME STALWART_WEBHOOK_TOKEN STALWART_WEBHOOK_SIGNING_KEY; do
-            eval "value=\${$name:-}"
-            test -n "$value" || fail "$name is required when DELIVERY_PROVIDER=smtp."
-            case "$value" in *REPLACE*|*change-me*) fail "$name still contains a placeholder." ;; esac
-        done
+    ses|smtp) ;;
+    *) fail 'DELIVERY_PROVIDER must be ses or smtp.' ;;
+esac
+if test "${DELIVERY_PROVIDER:-ses}" = smtp || test -n "${SMTP_HOST:-}${SMTP_USERNAME:-}${SMTP_PASSWORD:-}${STALWART_WEBHOOK_TOKEN:-}${STALWART_WEBHOOK_SIGNING_KEY:-}"; then
+    for name in SMTP_HOST SMTP_USERNAME SMTP_PASSWORD SMTP_HELO_NAME STALWART_WEBHOOK_TOKEN STALWART_WEBHOOK_SIGNING_KEY; do
+        eval "value=\${$name:-}"
+        test -n "$value" || fail "Set all SMTP and Stalwart webhook variables to enable cohort routing. Missing $name."
+        case "$value" in *REPLACE*|*change-me*) fail "$name still contains a placeholder." ;; esac
+    done
         case "${SMTP_PORT:-465}" in ''|*[!0-9]*|0) fail 'SMTP_PORT must be a positive port number.' ;; esac
         test "${SMTP_PORT:-465}" -le 65535 || fail 'SMTP_PORT is outside the port range.'
         case "${SMTP_SECURITY:-implicit_tls}" in implicit_tls|starttls) ;; *) fail 'SMTP_SECURITY must be implicit_tls or starttls.' ;; esac
@@ -54,15 +50,14 @@ case "${DELIVERY_PROVIDER:-ses}" in
         test "${#STALWART_WEBHOOK_TOKEN}" -ge 32 || fail 'STALWART_WEBHOOK_TOKEN must contain at least 32 characters.'
         test "${#STALWART_WEBHOOK_SIGNING_KEY}" -ge 32 || fail 'STALWART_WEBHOOK_SIGNING_KEY must contain at least 32 characters.'
         test "$STALWART_WEBHOOK_TOKEN" != "$STALWART_WEBHOOK_SIGNING_KEY" || fail 'Use different Stalwart webhook bearer and HMAC secrets.'
-        if test -n "${WORKER_AWS_ACCESS_KEY_ID:-}${WORKER_AWS_SECRET_ACCESS_KEY:-}${SES_EVENTS_QUEUE_URL:-}${SES_EVENTS_TOPIC_ARN:-}${SES_CONFIGURATION_SET:-}"; then
-            for name in WORKER_AWS_ACCESS_KEY_ID WORKER_AWS_SECRET_ACCESS_KEY SES_EVENTS_QUEUE_URL SES_EVENTS_TOPIC_ARN SES_CONFIGURATION_SET; do
-                eval "value=\${$name:-}"
-                test -n "$value" || fail "Set all SES worker/event variables to drain and observe existing SES mail, or clear all of them. Missing $name."
-            done
-        fi
-        ;;
-    *) fail 'DELIVERY_PROVIDER must be ses or smtp.' ;;
-esac
+fi
+if test "${DELIVERY_PROVIDER:-ses}" = ses || test -n "${WORKER_AWS_ACCESS_KEY_ID:-}${WORKER_AWS_SECRET_ACCESS_KEY:-}${SES_EVENTS_QUEUE_URL:-}${SES_EVENTS_TOPIC_ARN:-}${SES_CONFIGURATION_SET:-}"; then
+    for name in WORKER_AWS_ACCESS_KEY_ID WORKER_AWS_SECRET_ACCESS_KEY SES_EVENTS_QUEUE_URL SES_EVENTS_TOPIC_ARN SES_CONFIGURATION_SET; do
+        eval "value=\${$name:-}"
+        test -n "$value" || fail "Set all SES worker/event variables to enable SES routing and rollback. Missing $name."
+        case "$value" in *REPLACE*|*ACCOUNT_ID*|*change-me*) fail "$name still contains a placeholder." ;; esac
+    done
+fi
 case "${AUTH_EMAIL_DELIVERY_ENABLED:-false}" in
     true)
         test -n "${ACCOUNT_EMAIL_FROM:-}" || fail 'ACCOUNT_EMAIL_FROM is required when AUTH_EMAIL_DELIVERY_ENABLED=true.'

@@ -46,8 +46,16 @@ pub(crate) struct Attachment {
 enum Outcome {
     Sent(String),
     Retry(String),
+    Deferred(String),
     Failed(String),
     AlreadyHandled,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ProviderControl {
+    Continue,
+    RollbackToSes,
+    Defer,
 }
 
 #[derive(Debug)]
@@ -157,6 +165,14 @@ pub async fn run(
                     .await
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
             }
+            Outcome::Deferred(reason) => {
+                tracing::warn!(email_id = %job.email_id, error = %reason, "email delivery deferred by operator control");
+                defer_for_operator(&pool, job.email_id, &reason).await?;
+                message
+                    .double_ack()
+                    .await
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            }
             Outcome::Retry(reason) | Outcome::Failed(reason) => {
                 fail_email(&pool, job.email_id, &reason).await?;
                 record_dead_letter(
@@ -184,7 +200,7 @@ async fn process(
     email_id: Uuid,
 ) -> Result<Outcome> {
     let attempt_id = Uuid::new_v4();
-    let claimed = sqlx::query("UPDATE emails SET status = 'processing', processing_started_at = now(), processing_attempts = processing_attempts + 1, last_error = NULL WHERE id = $1 AND status = 'queued' RETURNING id, environment, delivery_provider, sender, subject, text_body, html_body, raw_object_key, content_checksum, reply_to, processing_attempts")
+    let claimed = sqlx::query("UPDATE emails SET status = 'processing', processing_started_at = now(), processing_attempts = processing_attempts + 1, last_error = NULL WHERE id = $1 AND status = 'queued' RETURNING id, workspace_id, environment, delivery_provider, sender, subject, text_body, html_body, raw_object_key, content_checksum, reply_to, processing_attempts")
         .bind(email_id).fetch_optional(pool).await?;
     let Some(row) = claimed else {
         let state = sqlx::query(
@@ -200,6 +216,7 @@ async fn process(
         });
     };
     let attempt_number = row.get::<i32, _>("processing_attempts");
+    let workspace_id = row.get::<Uuid, _>("workspace_id");
     let mut email = Email {
         id: row.get("id"),
         attempt_id,
@@ -296,13 +313,11 @@ async fn process(
     if email.environment == "test" {
         return simulate(pool, &email).await;
     }
-    sqlx::query("INSERT INTO delivery_provider_attempts(id,email_id,provider,attempt_number) VALUES($1,$2,$3,$4)")
-        .bind(email.attempt_id)
-        .bind(email.id)
-        .bind(&email.delivery_provider)
-        .bind(attempt_number)
-        .execute(pool)
-        .await?;
+    if !prepare_provider_attempt(pool, providers, workspace_id, &mut email, attempt_number).await? {
+        return Ok(Outcome::Deferred(
+            "SMTP delivery is paused; no provider attempt was started".into(),
+        ));
+    }
     let provider_id = match providers.submit(&email.delivery_provider, &email).await {
         Ok(value) => value,
         Err(ProviderFailure::Retryable(reason)) => {
@@ -381,6 +396,70 @@ async fn process(
         )));
     }
     Ok(Outcome::Sent(provider_id))
+}
+
+async fn prepare_provider_attempt(
+    pool: &db::DbPool,
+    providers: &super::provider::DeliveryProviders,
+    workspace_id: Uuid,
+    email: &mut Email,
+    attempt_number: i32,
+) -> Result<bool> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('delivery-routing-control',0))")
+        .execute(&mut *tx)
+        .await?;
+    if email.delivery_provider == "smtp" {
+        let controls = sqlx::query(
+            "SELECT smtp_paused,ses_rollback_enabled FROM delivery_operator_controls WHERE singleton=true",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        match provider_control(
+            &email.delivery_provider,
+            controls.get("smtp_paused"),
+            controls.get("ses_rollback_enabled"),
+            providers.is_available("ses"),
+        ) {
+            ProviderControl::RollbackToSes => {
+                let changed = sqlx::query("UPDATE emails SET delivery_provider='ses' WHERE id=$1 AND workspace_id=$2 AND status='processing' AND NOT EXISTS(SELECT 1 FROM delivery_provider_attempts WHERE email_id=$1)")
+                    .bind(email.id)
+                    .bind(workspace_id)
+                    .execute(&mut *tx)
+                    .await?;
+                if changed.rows_affected() != 1 {
+                    return Ok(false);
+                }
+                email.delivery_provider = "ses".into();
+            }
+            ProviderControl::Defer => return Ok(false),
+            ProviderControl::Continue => {}
+        }
+    }
+    sqlx::query("INSERT INTO delivery_provider_attempts(id,email_id,provider,attempt_number) VALUES($1,$2,$3,$4)")
+        .bind(email.attempt_id)
+        .bind(email.id)
+        .bind(&email.delivery_provider)
+        .bind(attempt_number)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+fn provider_control(
+    provider: &str,
+    smtp_paused: bool,
+    rollback_enabled: bool,
+    ses_available: bool,
+) -> ProviderControl {
+    if provider != "smtp" || !smtp_paused {
+        ProviderControl::Continue
+    } else if rollback_enabled && ses_available {
+        ProviderControl::RollbackToSes
+    } else {
+        ProviderControl::Defer
+    }
 }
 
 async fn finish_provider_attempt(
@@ -534,6 +613,24 @@ async fn reset_for_retry(pool: &db::DbPool, id: Uuid, reason: &str) -> Result<()
     sqlx::query("UPDATE emails SET status = 'queued', processing_started_at = NULL, last_error = $2 WHERE id = $1 AND status = 'processing'").bind(id).bind(reason).execute(pool).await?;
     Ok(())
 }
+
+async fn defer_for_operator(pool: &db::DbPool, id: Uuid, reason: &str) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    let changed = sqlx::query("UPDATE emails SET status='queued',processing_started_at=NULL,processing_attempts=GREATEST(processing_attempts-1,0),last_error=$2 WHERE id=$1 AND status='processing' AND NOT EXISTS(SELECT 1 FROM delivery_provider_attempts WHERE email_id=$1)")
+        .bind(id)
+        .bind(reason)
+        .execute(&mut *tx)
+        .await?;
+    if changed.rows_affected() == 1 {
+        sqlx::query("INSERT INTO outbox_events(aggregate_type,aggregate_id,event_type,payload,available_at) VALUES('email',$1,'email.accepted',$2,now()+interval '5 minutes')")
+            .bind(id)
+            .bind(serde_json::json!({"emailId":id}))
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
 async fn fail_email(pool: &db::DbPool, id: Uuid, reason: &str) -> Result<()> {
     sqlx::query("UPDATE emails SET status = 'failed', processing_started_at = NULL, completed_at = now(), last_error = $2 WHERE id = $1 AND status IN ('queued', 'processing')").bind(id).bind(reason).execute(pool).await?;
     Ok(())
@@ -659,8 +756,28 @@ async fn simulate(pool: &db::DbPool, email: &Email) -> Result<Outcome> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_raw_message, Attachment, Email};
+    use super::{build_raw_message, provider_control, Attachment, Email, ProviderControl};
     use uuid::Uuid;
+
+    #[test]
+    fn applies_pause_only_before_a_provider_attempt() {
+        assert_eq!(
+            provider_control("smtp", true, true, true),
+            ProviderControl::RollbackToSes
+        );
+        assert_eq!(
+            provider_control("smtp", true, false, true),
+            ProviderControl::Defer
+        );
+        assert_eq!(
+            provider_control("smtp", false, true, true),
+            ProviderControl::Continue
+        );
+        assert_eq!(
+            provider_control("ses", true, true, true),
+            ProviderControl::Continue
+        );
+    }
 
     #[test]
     fn shared_mime_contains_correlation_and_never_exposes_bcc() {

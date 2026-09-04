@@ -57,6 +57,9 @@ status=$(compose exec -T api curl --silent --output /dev/null --write-out '%{htt
 test "$status" = 404
 compose exec -T postgres psql --username mailer --dbname mailer --tuples-only \
     --command 'SELECT count(*) FROM _sqlx_migrations;' | grep -Eq '[1-9][0-9]*'
+test "$(compose exec -T postgres psql -At --username mailer --dbname mailer --command "SELECT smtp_paused::text||':'||smtp_daily_email_limit||':'||ses_rollback_enabled::text FROM delivery_operator_controls WHERE singleton=true")" = 'true:100:true'
+test "$(compose exec -T postgres psql -At --username mailer --dbname mailer --command "WITH first AS (INSERT INTO delivery_provider_daily_usage(usage_date,provider,emails_admitted) VALUES(current_date,'smtp',1) ON CONFLICT(usage_date,provider) DO UPDATE SET emails_admitted=delivery_provider_daily_usage.emails_admitted+1 WHERE delivery_provider_daily_usage.emails_admitted<1 RETURNING 1) SELECT count(*) FROM first")" = 1
+test "$(compose exec -T postgres psql -At --username mailer --dbname mailer --command "WITH capped AS (INSERT INTO delivery_provider_daily_usage(usage_date,provider,emails_admitted) VALUES(current_date,'smtp',1) ON CONFLICT(usage_date,provider) DO UPDATE SET emails_admitted=delivery_provider_daily_usage.emails_admitted+1 WHERE delivery_provider_daily_usage.emails_admitted<1 RETURNING 1) SELECT count(*) FROM capped")" = 0
 
 compose exec -T postgres psql --username mailer --dbname mailer <<'SQL'
 INSERT INTO users (id,email,password_hash,display_name,email_verified_at)
@@ -98,4 +101,4 @@ test "$(compose exec -T postgres psql -At --username mailer --dbname mailer --co
 test "$(compose exec -T postgres psql -At --username mailer --dbname mailer --command "SELECT count(*) FROM delivery_events WHERE email_id='33333333-3333-4333-8333-333333333333'")" = 2
 test "$(compose exec -T postgres psql -At --username mailer --dbname mailer --command "SELECT emails_delivered FROM usage_counters WHERE workspace_id='22222222-2222-4222-8222-222222222222'")" = 1
 
-echo 'Real API, authenticated NATS, migrations, signed Stalwart events, replay safety, and Nginx isolation passed.'
+echo 'Real API, authenticated NATS, routing controls, caps, signed Stalwart events, replay safety, and Nginx isolation passed.'

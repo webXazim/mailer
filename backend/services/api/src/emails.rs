@@ -359,6 +359,11 @@ async fn send_email(
             "Unable to reserve workspace capacity",
         );
     }
+    let delivery_provider =
+        match resolve_delivery_provider(&state, &mut tx, workspace_id, &environment).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
     let accepted = match sqlx::query_scalar::<_, i64>("INSERT INTO usage_counters (workspace_id, period_start, emails_accepted) VALUES ($1, date_trunc('month', now())::date, 1) ON CONFLICT (workspace_id, period_start) DO UPDATE SET emails_accepted = usage_counters.emails_accepted + 1 RETURNING emails_accepted")
         .bind(workspace_id).fetch_one(&mut *tx).await {
         Ok(value) => value,
@@ -384,7 +389,7 @@ async fn send_email(
         );
     }
     if sqlx::query("INSERT INTO emails (id, workspace_id, domain_id, api_key_id, idempotency_key, environment, sender, subject, text_body, html_body, reply_to, headers, tags, metadata, delivery_provider, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'queued')")
-        .bind(email_id).bind(workspace_id).bind(domain_id).bind(api_key_id).bind(idempotency_key).bind(&environment).bind(input.from.trim()).bind(input.subject.trim()).bind(input.text.clone()).bind(input.html.clone()).bind(input.reply_to.clone()).bind(input.headers.clone().unwrap_or_else(|| json!({}))).bind(input.tags.clone().unwrap_or_else(|| json!([]))).bind(input.metadata.clone().unwrap_or_else(|| json!({}))).bind(&state.delivery_provider).execute(&mut *tx).await.is_err() {
+        .bind(email_id).bind(workspace_id).bind(domain_id).bind(api_key_id).bind(idempotency_key).bind(&environment).bind(input.from.trim()).bind(input.subject.trim()).bind(input.text.clone()).bind(input.html.clone()).bind(input.reply_to.clone()).bind(input.headers.clone().unwrap_or_else(|| json!({}))).bind(input.tags.clone().unwrap_or_else(|| json!([]))).bind(input.metadata.clone().unwrap_or_else(|| json!({}))).bind(&delivery_provider).execute(&mut *tx).await.is_err() {
         return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to store email");
     }
     for (kind, address) in recipients {
@@ -439,6 +444,127 @@ async fn send_email(
         );
     }
     (StatusCode::ACCEPTED, Json(response)).into_response()
+}
+
+async fn resolve_delivery_provider(
+    state: &AppState,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workspace_id: Uuid,
+    environment: &str,
+) -> Result<String, Response> {
+    if environment == "test" {
+        return Ok(state.delivery_provider.clone());
+    }
+    let route = sqlx::query_scalar::<_, String>(
+        "SELECT provider FROM workspace_delivery_routes WHERE workspace_id=$1",
+    )
+    .bind(workspace_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|_| {
+        error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "Unable to resolve delivery route",
+        )
+    })?;
+    let requested = route.unwrap_or_else(|| state.delivery_provider.clone());
+    let controls = sqlx::query(
+        "SELECT smtp_paused,smtp_daily_email_limit,ses_rollback_enabled FROM delivery_operator_controls WHERE singleton=true FOR SHARE",
+    )
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|_| {
+        error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "Unable to load delivery controls",
+        )
+    })?;
+    let rollback = controls.get::<bool, _>("ses_rollback_enabled");
+    let paused = controls.get::<bool, _>("smtp_paused");
+    let selected = choose_delivery_provider(
+        &requested,
+        state.ses_delivery_available,
+        state.smtp_delivery_available,
+        paused,
+        rollback,
+        true,
+    )
+    .map_err(delivery_unavailable)?;
+    if selected == "ses" {
+        return Ok(selected.to_owned());
+    }
+    let daily_limit = controls.get::<i64, _>("smtp_daily_email_limit");
+    let admitted = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO delivery_provider_daily_usage(usage_date,provider,emails_admitted) VALUES(current_date,'smtp',1) ON CONFLICT(usage_date,provider) DO UPDATE SET emails_admitted=delivery_provider_daily_usage.emails_admitted+1 WHERE delivery_provider_daily_usage.emails_admitted < $1 RETURNING emails_admitted",
+    )
+    .bind(daily_limit)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|_| {
+        error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "Unable to reserve SMTP capacity",
+        )
+    })?;
+    if admitted.is_some() {
+        Ok("smtp".to_owned())
+    } else {
+        choose_delivery_provider(
+            &requested,
+            state.ses_delivery_available,
+            state.smtp_delivery_available,
+            paused,
+            rollback,
+            false,
+        )
+        .map(str::to_owned)
+        .map_err(delivery_unavailable)
+    }
+}
+
+fn choose_delivery_provider(
+    requested: &str,
+    ses_available: bool,
+    smtp_available: bool,
+    smtp_paused: bool,
+    rollback_enabled: bool,
+    smtp_capacity: bool,
+) -> Result<&str, &'static str> {
+    if requested == "ses" {
+        return ses_available
+            .then_some("ses")
+            .ok_or("SES delivery is not configured");
+    }
+    let smtp_reason = if !smtp_available {
+        Some("SMTP delivery is not configured")
+    } else if smtp_paused {
+        Some("SMTP delivery is paused")
+    } else if !smtp_capacity {
+        Some("SMTP daily volume cap reached")
+    } else {
+        None
+    };
+    if let Some(reason) = smtp_reason {
+        if rollback_enabled && ses_available {
+            Ok("ses")
+        } else {
+            Err(reason)
+        }
+    } else {
+        Ok(requested)
+    }
+}
+
+fn delivery_unavailable(reason: &str) -> Response {
+    let (status, code) = if reason == "SMTP daily volume cap reached" {
+        (StatusCode::TOO_MANY_REQUESTS, "smtp_daily_limit_reached")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "delivery_unavailable")
+    };
+    error(status, code, reason)
 }
 
 fn request_hash_legacy(input: &SendEmailRequest) -> Vec<u8> {
@@ -569,7 +695,8 @@ fn error(status: StatusCode, code: &str, message: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::{
-        mailbox_address, sender_domain, valid_email, validate_attachments, AttachmentInput,
+        choose_delivery_provider, mailbox_address, sender_domain, valid_email,
+        validate_attachments, AttachmentInput,
     };
 
     #[test]
@@ -609,5 +736,29 @@ mod tests {
             content_id: None,
         };
         assert!(validate_attachments(Some(vec![invalid])).is_err());
+    }
+
+    #[test]
+    fn routing_rolls_back_only_before_smtp_capacity_is_used() {
+        assert_eq!(
+            choose_delivery_provider("smtp", true, true, false, true, true),
+            Ok("smtp")
+        );
+        assert_eq!(
+            choose_delivery_provider("smtp", true, true, false, true, false),
+            Ok("ses")
+        );
+        assert_eq!(
+            choose_delivery_provider("smtp", true, true, false, false, false),
+            Err("SMTP daily volume cap reached")
+        );
+        assert_eq!(
+            choose_delivery_provider("smtp", true, true, true, false, true),
+            Err("SMTP delivery is paused")
+        );
+        assert_eq!(
+            choose_delivery_provider("smtp", false, true, false, true, true),
+            Ok("smtp")
+        );
     }
 }

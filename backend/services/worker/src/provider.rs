@@ -103,6 +103,14 @@ impl DeliveryProviders {
             ))),
         }
     }
+
+    pub(crate) fn is_available(&self, provider: &str) -> bool {
+        match provider {
+            "ses" => self.ses.is_some(),
+            "smtp" => self.smtp.is_some(),
+            _ => false,
+        }
+    }
 }
 
 impl SmtpProvider {

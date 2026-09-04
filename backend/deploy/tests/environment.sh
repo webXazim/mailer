@@ -81,6 +81,17 @@ grep -q 'build api worker frontend' docker-calls.log
 grep -q 'up -d --no-build --wait --wait-timeout 180' docker-calls.log
 grep -q 'port api 8081' docker-calls.log
 if grep -q 'down\|prune\|--volumes' docker-calls.log; then exit 1; fi
+sh manage smtp-pause
+sh manage smtp-resume
+sh manage smtp-cap 25
+sh manage ses-rollback enable
+sh manage route-workspace 11111111-1111-4111-8111-111111111111 smtp
+sh manage route-workspace 11111111-1111-4111-8111-111111111111 default
+sh manage delivery-routing-status
+sh manage delivery-report 7
+if sh manage smtp-cap invalid >/dev/null 2>&1; then exit 1; fi
+grep -q 'delivery_operator_controls' docker-calls.log
+grep -q 'workspace_delivery_routes' docker-calls.log
 echo 'Environment initialization, validation and deployment sequencing passed.'
 
 # A failed database dump must not become an apparently valid encrypted backup.

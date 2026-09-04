@@ -181,6 +181,12 @@ worker/API restarts and after webhook loss/retry simulations.
 
 **Outcome:** controlled migration without duplicate delivery or rapid IP damage.
 
+**Local implementation status:** provider selection is fixed at admission,
+workspace cohorts, a global SMTP pause, a daily SMTP cap, pre-attempt SES rollback,
+operator commands, deferred paused mail, and provider/domain outcome reporting are
+implemented. Live warm-up, inbox placement monitoring, and the two-week reputation
+gate still require production observations.
+
 - Start with internal authentication and notification email only.
 - Add operator-controlled cohorts and daily volume caps for Stalwart.
 - Warm the IPv4 gradually across Gmail, Microsoft and other mailbox providers.

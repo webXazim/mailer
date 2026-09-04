@@ -30,6 +30,13 @@ Commands:
   pending-workspaces  List workspaces without production access
   approve-workspace   Manually enable production for a workspace UUID
   account-email-status Show auth-email and downstream SES status for an address
+  delivery-routing-status Show provider controls, cohorts, and today's volume
+  smtp-pause          Stop new SMTP attempts; safely defer or roll back queued mail
+  smtp-resume         Allow SMTP attempts for configured cohorts
+  smtp-cap NUMBER     Set the global daily SMTP admission cap
+  ses-rollback MODE   Enable or disable pre-attempt SES rollback (enable|disable)
+  route-workspace ID PROVIDER Route a workspace to ses, smtp, or default
+  delivery-report [DAYS] Show provider/domain outcomes (default: 7 days)
   healthcheck         Check the public console, API, and private-route blocking
   backup              Run an encrypted PostgreSQL backup
   restore-rehearsal   Restore the latest backup into a disposable database
@@ -159,6 +166,49 @@ WHERE lower(account_email.recipient) = lower(:'recipient')
 ORDER BY account_email.updated_at DESC
 LIMIT 10;
 SQL
+        ;;
+    delivery-routing-status)
+        production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --variable=ON_ERROR_STOP=1 <<'SQL'
+SELECT smtp_paused,smtp_daily_email_limit,ses_rollback_enabled,updated_at FROM delivery_operator_controls WHERE singleton=true;
+SELECT usage_date,provider,emails_admitted FROM delivery_provider_daily_usage WHERE usage_date>=current_date-7 ORDER BY usage_date DESC,provider;
+SELECT route.workspace_id,workspace.name,route.provider,route.updated_at FROM workspace_delivery_routes route JOIN workspaces workspace ON workspace.id=route.workspace_id ORDER BY route.updated_at DESC;
+SELECT action,details,created_at FROM delivery_control_audit ORDER BY created_at DESC LIMIT 20;
+SQL
+        ;;
+    smtp-pause|smtp-resume)
+        paused=true
+        test "$command" = smtp-resume && paused=false
+        production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --variable=ON_ERROR_STOP=1 --command "BEGIN; SELECT pg_advisory_xact_lock(hashtextextended('delivery-routing-control',0)); UPDATE delivery_operator_controls SET smtp_paused=$paused,updated_at=now() WHERE singleton=true; INSERT INTO delivery_control_audit(action,details) VALUES('smtp-pause',jsonb_build_object('paused',$paused)); COMMIT;"
+        ;;
+    smtp-cap)
+        shift
+        limit=${1:-}
+        printf '%s\n' "$limit" | grep -Eq '^[1-9][0-9]*$' || { echo 'Usage: sh manage smtp-cap POSITIVE_NUMBER' >&2; exit 2; }
+        production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --variable=ON_ERROR_STOP=1 --command "BEGIN; UPDATE delivery_operator_controls SET smtp_daily_email_limit=$limit,updated_at=now() WHERE singleton=true; INSERT INTO delivery_control_audit(action,details) VALUES('smtp-cap',jsonb_build_object('limit',$limit)); COMMIT;"
+        ;;
+    ses-rollback)
+        shift
+        mode=${1:-}
+        case "$mode" in enable) enabled=true ;; disable) enabled=false ;; *) echo 'Usage: sh manage ses-rollback enable|disable' >&2; exit 2 ;; esac
+        production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --variable=ON_ERROR_STOP=1 --command "BEGIN; SELECT pg_advisory_xact_lock(hashtextextended('delivery-routing-control',0)); UPDATE delivery_operator_controls SET ses_rollback_enabled=$enabled,updated_at=now() WHERE singleton=true; INSERT INTO delivery_control_audit(action,details) VALUES('ses-rollback',jsonb_build_object('enabled',$enabled)); COMMIT;"
+        ;;
+    route-workspace)
+        shift
+        workspace_id=${1:-}
+        provider=${2:-}
+        printf '%s\n' "$workspace_id" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' || { echo 'Usage: sh manage route-workspace WORKSPACE_UUID ses|smtp|default' >&2; exit 2; }
+        case "$provider" in
+            ses|smtp) sql="BEGIN; INSERT INTO workspace_delivery_routes(workspace_id,provider) VALUES('$workspace_id'::uuid,'$provider') ON CONFLICT(workspace_id) DO UPDATE SET provider=EXCLUDED.provider,updated_at=now(); INSERT INTO delivery_control_audit(action,details) VALUES('workspace-route',jsonb_build_object('workspaceId','$workspace_id','provider','$provider')); COMMIT;" ;;
+            default) sql="BEGIN; DELETE FROM workspace_delivery_routes WHERE workspace_id='$workspace_id'::uuid; INSERT INTO delivery_control_audit(action,details) VALUES('workspace-route',jsonb_build_object('workspaceId','$workspace_id','provider','default')); COMMIT;" ;;
+            *) echo 'Usage: sh manage route-workspace WORKSPACE_UUID ses|smtp|default' >&2; exit 2 ;;
+        esac
+        production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --variable=ON_ERROR_STOP=1 --command "$sql"
+        ;;
+    delivery-report)
+        shift
+        days=${1:-7}
+        printf '%s\n' "$days" | grep -Eq '^[1-9][0-9]*$' || { echo 'Usage: sh manage delivery-report [POSITIVE_DAYS]' >&2; exit 2; }
+        production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --variable=ON_ERROR_STOP=1 --command "SELECT email.delivery_provider AS provider,split_part(lower(recipient.address),'@',2) AS recipient_domain,event.event_type,count(*) AS events FROM delivery_events event JOIN emails email ON email.id=event.email_id LEFT JOIN email_recipients recipient ON recipient.email_id=email.id AND lower(recipient.address)=lower(event.recipient) WHERE event.occurred_at>=now()-make_interval(days=>$days) GROUP BY 1,2,3 ORDER BY 1,2,3;"
         ;;
     healthcheck)
         load_environment

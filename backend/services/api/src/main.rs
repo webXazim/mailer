@@ -45,6 +45,8 @@ pub(crate) struct AppState {
     stalwart_webhook_token: Option<String>,
     stalwart_webhook_signing_key: Option<String>,
     delivery_provider: String,
+    ses_delivery_available: bool,
+    smtp_delivery_available: bool,
     aws_region: String,
     console_origin: String,
     account_email_from: Option<String>,
@@ -119,6 +121,14 @@ async fn main() -> anyhow::Result<()> {
         stalwart_webhook_token: settings.stalwart_webhook_token.clone(),
         stalwart_webhook_signing_key: settings.stalwart_webhook_signing_key.clone(),
         delivery_provider: settings.delivery_provider.clone(),
+        ses_delivery_available: settings.ses_configuration_set.is_some()
+            && settings.ses_events_queue_url.is_some(),
+        smtp_delivery_available: settings.smtp_host.is_some()
+            && settings.smtp_username.is_some()
+            && settings.smtp_password.is_some()
+            && settings.smtp_helo_name.is_some()
+            && settings.stalwart_webhook_token.is_some()
+            && settings.stalwart_webhook_signing_key.is_some(),
         aws_region: settings.aws_region.clone(),
         console_origin: settings.console_origin.clone(),
         account_email_from: settings.account_email_from.clone(),

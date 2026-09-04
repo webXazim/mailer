@@ -195,11 +195,23 @@ impl Settings {
                 bail!("STALWART_API_TOKEN must contain at least 32 characters");
             }
         }
-        if delivery_provider == "smtp"
+        let smtp_values = [
+            smtp_host.as_ref(),
+            smtp_username.as_ref(),
+            smtp_password.as_ref(),
+            smtp_helo_name.as_ref(),
+        ];
+        let smtp_configured = smtp_values.iter().all(|value| value.is_some());
+        let smtp_requested =
+            smtp_host.is_some() || smtp_username.is_some() || smtp_password.is_some();
+        if smtp_requested && !smtp_configured {
+            bail!("Set SMTP_HOST, SMTP_USERNAME, SMTP_PASSWORD, and SMTP_HELO_NAME together");
+        }
+        if smtp_configured
             && app_env == "production"
             && (stalwart_webhook_token.is_none() || stalwart_webhook_signing_key.is_none())
         {
-            bail!("STALWART_WEBHOOK_TOKEN and STALWART_WEBHOOK_SIGNING_KEY are required for SMTP delivery in production");
+            bail!("STALWART_WEBHOOK_TOKEN and STALWART_WEBHOOK_SIGNING_KEY are required whenever SMTP delivery is configured in production");
         }
         for (name, value) in [
             ("STALWART_WEBHOOK_TOKEN", &stalwart_webhook_token),
@@ -221,12 +233,7 @@ impl Settings {
         if smtp_timeout_seconds == 0 || smtp_timeout_seconds > 300 {
             bail!("SMTP_TIMEOUT_SECONDS must be between 1 and 300");
         }
-        if delivery_provider == "smtp"
-            && (smtp_host.is_none()
-                || smtp_username.is_none()
-                || smtp_password.is_none()
-                || smtp_helo_name.is_none())
-        {
+        if delivery_provider == "smtp" && !smtp_configured {
             bail!("SMTP_HOST, SMTP_USERNAME, SMTP_PASSWORD, and SMTP_HELO_NAME are required when DELIVERY_PROVIDER=smtp");
         }
         if ses_events_queue_url.is_some() != ses_events_topic_arn.is_some() {

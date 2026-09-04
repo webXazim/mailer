@@ -15,16 +15,16 @@ use uuid::Uuid;
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SesEvent {
-    event_id: String,
-    message_id: String,
-    event_type: String,
-    occurred_at: DateTime<Utc>,
+pub(crate) struct SesEvent {
+    pub(crate) event_id: String,
+    pub(crate) message_id: String,
+    pub(crate) event_type: String,
+    pub(crate) occurred_at: DateTime<Utc>,
     #[serde(default)]
-    recipients: Vec<String>,
-    bounce_type: Option<String>,
+    pub(crate) recipients: Vec<String>,
+    pub(crate) bounce_type: Option<String>,
     #[serde(default)]
-    details: serde_json::Value,
+    pub(crate) details: serde_json::Value,
 }
 
 pub fn routes() -> Router<AppState> {
@@ -43,11 +43,28 @@ async fn ingest(
             "Event authentication failed",
         );
     }
+    ingest_event(&state, event, "ses", None).await
+}
+
+pub(crate) async fn ingest_event(
+    state: &AppState,
+    event: SesEvent,
+    provider: &str,
+    correlation: Option<(Uuid, Uuid)>,
+) -> Response {
     if event.event_id.trim().is_empty()
         || event.message_id.trim().is_empty()
         || !matches!(
             event.event_type.as_str(),
-            "delivery" | "bounce" | "complaint" | "reject" | "rendering_failure" | "open" | "click"
+            "queued"
+                | "deferred"
+                | "delivery"
+                | "bounce"
+                | "complaint"
+                | "reject"
+                | "rendering_failure"
+                | "open"
+                | "click"
         )
     {
         return error(
@@ -56,6 +73,7 @@ async fn ingest(
             "The delivery event is invalid",
         );
     }
+    let has_recipient = !event.recipients.is_empty();
     let recipients = match normalized_recipients(&event.recipients) {
         Some(recipients) => recipients,
         None => {
@@ -69,7 +87,7 @@ async fn ingest(
     let mut tx = match state.db.begin().await {
         Ok(value) => value,
         Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to begin SES event transaction");
+            tracing::error!(error = %error_value, provider, "failed to begin delivery event transaction");
             return error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal_error",
@@ -77,22 +95,34 @@ async fn ingest(
             );
         }
     };
-    let email = match sqlx::query(
-        "SELECT id, workspace_id FROM emails WHERE provider_message_id = $1 FOR UPDATE",
-    )
-    .bind(event.message_id.trim())
-    .fetch_optional(&mut *tx)
-    .await
-    {
+    let email_result = match correlation {
+        Some((email_id, attempt_id)) => sqlx::query(
+            "SELECT email.id, email.workspace_id FROM emails AS email JOIN delivery_provider_attempts AS attempt ON attempt.email_id=email.id WHERE email.id=$1 AND attempt.id=$2 AND email.delivery_provider=$3 FOR UPDATE OF email",
+        )
+        .bind(email_id)
+        .bind(attempt_id)
+        .bind(provider)
+        .fetch_optional(&mut *tx)
+        .await,
+        None => sqlx::query(
+            "SELECT id, workspace_id FROM emails WHERE provider_message_id = $1 AND delivery_provider=$2 FOR UPDATE",
+        )
+        .bind(event.message_id.trim())
+        .bind(provider)
+        .fetch_optional(&mut *tx)
+        .await,
+    };
+    let email = match email_result {
         Ok(Some(value)) => value,
         Ok(None) => {
-            let account: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM account_emails WHERE provider_message_id=$1)",
-            )
-            .bind(&event.message_id)
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap_or(false);
+            let account: bool = provider == "ses"
+                && sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM account_emails WHERE provider_message_id=$1)",
+                )
+                .bind(&event.message_id)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap_or(false);
             if account {
                 return Json(json!({"data":{"accepted":true,"accountEmail":true}})).into_response();
             }
@@ -103,7 +133,7 @@ async fn ingest(
             );
         }
         Err(error_value) => {
-            tracing::error!(error = %error_value, provider_message_id = %event.message_id, "failed to resolve SES email");
+            tracing::error!(error = %error_value, provider_message_id = %event.message_id, provider, "failed to resolve provider email");
             return error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal_error",
@@ -132,18 +162,24 @@ async fn ingest(
     payload["emailId"] = json!(email_id);
     payload["environment"] = json!(context.0);
     payload["metadata"] = context.1;
+    payload["provider"] = json!(provider);
     let mut inserted = 0_u64;
     for recipient in recipients {
+        let base_event_id = if provider == "ses" {
+            event.event_id.clone()
+        } else {
+            format!("{provider}:{}", event.event_id)
+        };
         let provider_event_id = recipient.as_ref().map_or_else(
-            || event.event_id.clone(),
-            |address| format!("{}:{}", event.event_id, address),
+            || base_event_id.clone(),
+            |address| format!("{base_event_id}:{address}"),
         );
         let delivery_event_id = match sqlx::query_scalar::<_, Uuid>("INSERT INTO delivery_events (email_id, provider_event_id, event_type, recipient, payload, occurred_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (provider_event_id) DO NOTHING RETURNING id")
             .bind(email_id).bind(&provider_event_id).bind(&event.event_type).bind(recipient.clone()).bind(payload.clone()).bind(event.occurred_at).fetch_optional(&mut *tx).await {
                 Ok(Some(value)) => value,
                 Ok(None) => continue,
                 Err(error_value) => {
-                    tracing::error!(error = %error_value, provider_event_id = %provider_event_id, "failed to store SES delivery event");
+                    tracing::error!(error = %error_value, provider_event_id = %provider_event_id, provider, "failed to store delivery event");
                     return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to store delivery event");
                 }
             };
@@ -197,9 +233,25 @@ async fn ingest(
         }
     }
     if inserted > 0 {
-        let status = aggregate_status(&event.event_type);
+        let status = if has_recipient {
+            match sqlx::query_scalar::<_, Option<String>>(
+                "SELECT CASE WHEN bool_or(status='complained') THEN 'complained' WHEN bool_and(status='delivered') THEN 'delivered' WHEN bool_and(status NOT IN ('pending','sent')) AND bool_or(status='bounced') THEN 'bounced' WHEN bool_and(status NOT IN ('pending','sent')) AND bool_or(status='failed') THEN 'failed' END FROM email_recipients WHERE email_id=$1",
+            )
+            .bind(email_id)
+            .fetch_one(&mut *tx)
+            .await
+            {
+                Ok(value) => value,
+                Err(error_value) => {
+                    tracing::error!(error = %error_value, email_id = %email_id, "failed to aggregate recipient state");
+                    return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to aggregate recipient state");
+                }
+            }
+        } else {
+            aggregate_status(&event.event_type).map(str::to_owned)
+        };
         if let Some(status) = status {
-            let update = match status {
+            let update = match status.as_str() {
                 "complained" => "UPDATE emails SET status = 'complained', completed_at = now() WHERE id = $1 AND status <> 'complained'",
                 "bounced" => "UPDATE emails SET status = 'bounced', completed_at = now() WHERE id = $1 AND status NOT IN ('complained', 'bounced')",
                 "delivered" => "UPDATE emails SET status = 'delivered', completed_at = now() WHERE id = $1 AND status IN ('sent', 'processing', 'queued')",
@@ -230,7 +282,7 @@ async fn ingest(
         }
     }
     if let Err(error_value) = tx.commit().await {
-        tracing::error!(error = %error_value, email_id = %email_id, "failed to commit SES event transaction");
+        tracing::error!(error = %error_value, email_id = %email_id, provider, "failed to commit delivery event transaction");
         return error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal_error",

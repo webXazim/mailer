@@ -154,6 +154,13 @@ Cloudflare, verify it, rotate DKIM and disable sending without AWS credentials.
 **Outcome:** the UI and customer webhooks report actual outcomes rather than SMTP
 submission success.
 
+**Local implementation status:** authenticated HMAC-signed Stalwart webhook
+batches, Mailer-controlled message/attempt correlation, provider-scoped replay
+protection, queued/deferred/delivered/permanent-failure normalization,
+multi-recipient convergence, suppression updates, and customer webhook fan-out
+are implemented. The live outage/retry and recipient-provider gate is still
+required on the VPS.
+
 - Configure a Stalwart webhook with a dedicated HMAC key and bearer/basic
   authentication to a private Mailer ingestion endpoint.
 - Ingest queued, delivered, deferred, permanently failed and DSN-related events.

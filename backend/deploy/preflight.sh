@@ -42,7 +42,7 @@ case "${DELIVERY_PROVIDER:-ses}" in
         done
         ;;
     smtp)
-        for name in SMTP_HOST SMTP_USERNAME SMTP_PASSWORD SMTP_HELO_NAME; do
+        for name in SMTP_HOST SMTP_USERNAME SMTP_PASSWORD SMTP_HELO_NAME STALWART_WEBHOOK_TOKEN STALWART_WEBHOOK_SIGNING_KEY; do
             eval "value=\${$name:-}"
             test -n "$value" || fail "$name is required when DELIVERY_PROVIDER=smtp."
             case "$value" in *REPLACE*|*change-me*) fail "$name still contains a placeholder." ;; esac
@@ -51,6 +51,9 @@ case "${DELIVERY_PROVIDER:-ses}" in
         test "${SMTP_PORT:-465}" -le 65535 || fail 'SMTP_PORT is outside the port range.'
         case "${SMTP_SECURITY:-implicit_tls}" in implicit_tls|starttls) ;; *) fail 'SMTP_SECURITY must be implicit_tls or starttls.' ;; esac
         case "${SMTP_TIMEOUT_SECONDS:-30}" in ''|*[!0-9]*|0) fail 'SMTP_TIMEOUT_SECONDS must be a positive integer.' ;; esac
+        test "${#STALWART_WEBHOOK_TOKEN}" -ge 32 || fail 'STALWART_WEBHOOK_TOKEN must contain at least 32 characters.'
+        test "${#STALWART_WEBHOOK_SIGNING_KEY}" -ge 32 || fail 'STALWART_WEBHOOK_SIGNING_KEY must contain at least 32 characters.'
+        test "$STALWART_WEBHOOK_TOKEN" != "$STALWART_WEBHOOK_SIGNING_KEY" || fail 'Use different Stalwart webhook bearer and HMAC secrets.'
         if test -n "${WORKER_AWS_ACCESS_KEY_ID:-}${WORKER_AWS_SECRET_ACCESS_KEY:-}${SES_EVENTS_QUEUE_URL:-}${SES_EVENTS_TOPIC_ARN:-}${SES_CONFIGURATION_SET:-}"; then
             for name in WORKER_AWS_ACCESS_KEY_ID WORKER_AWS_SECRET_ACCESS_KEY SES_EVENTS_QUEUE_URL SES_EVENTS_TOPIC_ARN SES_CONFIGURATION_SET; do
                 eval "value=\${$name:-}"

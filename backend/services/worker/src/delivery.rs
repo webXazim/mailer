@@ -355,7 +355,7 @@ async fn process(
             )))
         }
     };
-    let updated = match sqlx::query("UPDATE emails SET status = 'sent', provider_message_id = $2, sent_at = now(), processing_started_at = NULL WHERE id = $1 AND status = 'processing'").bind(email.id).bind(&provider_id).execute(&mut *tx).await {
+    let updated = match sqlx::query("UPDATE emails SET status = CASE WHEN status = 'processing' THEN 'sent' ELSE status END, provider_message_id = COALESCE(provider_message_id, $2), sent_at = COALESCE(sent_at, now()), processing_started_at = NULL WHERE id = $1 AND status IN ('processing', 'delivered', 'bounced', 'complained', 'failed')").bind(email.id).bind(&provider_id).execute(&mut *tx).await {
         Ok(value) => value,
         Err(error) => return Ok(Outcome::Failed(format!("provider accepted message but state recording failed; manual review required: {error}"))),
     };

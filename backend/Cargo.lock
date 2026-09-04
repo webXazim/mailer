@@ -1009,6 +1009,7 @@ dependencies = [
  "cs-mail-db",
  "cs-mail-storage",
  "hex",
+ "hmac 0.12.1",
  "http-body-util",
  "hyper 1.11.0",
  "hyper-rustls 0.27.9",

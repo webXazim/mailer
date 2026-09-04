@@ -41,6 +41,8 @@ pub struct Settings {
     pub mta_public_host: Option<String>,
     pub mta_public_ipv4: Option<String>,
     pub mta_return_path_prefix: String,
+    pub stalwart_webhook_token: Option<String>,
+    pub stalwart_webhook_signing_key: Option<String>,
     pub event_ingest_token: String,
     pub webhook_signing_master_key: String,
     pub ses_events_queue_url: Option<String>,
@@ -106,6 +108,8 @@ impl Settings {
         let mta_public_ipv4 = optional("MTA_PUBLIC_IPV4");
         let mta_return_path_prefix =
             env::var("MTA_RETURN_PATH_PREFIX").unwrap_or_else(|_| "bounce".into());
+        let stalwart_webhook_token = optional("STALWART_WEBHOOK_TOKEN");
+        let stalwart_webhook_signing_key = optional("STALWART_WEBHOOK_SIGNING_KEY");
         let event_ingest_token =
             env::var("EVENT_INGEST_TOKEN").unwrap_or_else(|_| DEVELOPMENT_EVENT_TOKEN.into());
         let webhook_signing_master_key = env::var("WEBHOOK_SIGNING_MASTER_KEY")
@@ -166,7 +170,9 @@ impl Settings {
                 bail!("STALWART_API_URL must be an HTTP(S) URL with a host");
             }
             if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
-                bail!("STALWART_API_URL must be an origin URL without /api, a query, or a fragment");
+                bail!(
+                    "STALWART_API_URL must be an origin URL without /api, a query, or a fragment"
+                );
             }
             if app_env == "production"
                 && url.scheme() == "http"
@@ -187,6 +193,23 @@ impl Settings {
                 .context("MTA_PUBLIC_IPV4 must be an IPv4 address")?;
             if stalwart_api_token.as_deref().expect("checked above").len() < 32 {
                 bail!("STALWART_API_TOKEN must contain at least 32 characters");
+            }
+        }
+        if delivery_provider == "smtp"
+            && app_env == "production"
+            && (stalwart_webhook_token.is_none() || stalwart_webhook_signing_key.is_none())
+        {
+            bail!("STALWART_WEBHOOK_TOKEN and STALWART_WEBHOOK_SIGNING_KEY are required for SMTP delivery in production");
+        }
+        for (name, value) in [
+            ("STALWART_WEBHOOK_TOKEN", &stalwart_webhook_token),
+            (
+                "STALWART_WEBHOOK_SIGNING_KEY",
+                &stalwart_webhook_signing_key,
+            ),
+        ] {
+            if value.as_deref().is_some_and(|value| value.len() < 32) {
+                bail!("{name} must contain at least 32 characters");
             }
         }
         if !matches!(delivery_provider.as_str(), "ses" | "smtp") {
@@ -341,6 +364,8 @@ impl Settings {
             mta_public_host,
             mta_public_ipv4,
             mta_return_path_prefix,
+            stalwart_webhook_token,
+            stalwart_webhook_signing_key,
             event_ingest_token,
             webhook_signing_master_key,
             ses_events_queue_url,

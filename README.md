@@ -111,7 +111,8 @@ DNS and the configured domain provider automatically. Once the domain is verifie
 workspace can create a **Production** key for real messages. Domain provisioning can use
 SES or the independent Stalwart JMAP management API. SES delivery requires production
 access in the configured `AWS_REGION`; SMTP delivery requires an authenticated,
-production-ready relay. See [Stalwart domain provisioning](STALWART_DOMAIN_PROVISIONING.md).
+production-ready relay. See [Stalwart domain provisioning](STALWART_DOMAIN_PROVISIONING.md)
+and [Stalwart delivery events](STALWART_EVENT_INGESTION.md).
 
 In the Cloudflare dashboard, configure the supplied tunnel's published application:
 

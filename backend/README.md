@@ -68,6 +68,14 @@ suppressions, delivered usage is counted once, and webhook work is written to
 the outbox in the same transaction. Invalid SQS messages are left for the
 queue's redrive policy and dead-letter queue.
 
+Stalwart sends HMAC-SHA256-signed, bearer-authenticated event batches to
+`POST /internal/v1/stalwart/events`. The adapter correlates the Mailer-controlled
+message and attempt UUIDs, records queued and deferred activity without claiming
+delivery, and marks delivery only from `delivery.delivered`. Duplicate and
+out-of-order events are safe, and multi-recipient messages complete only when all
+recipient states are terminal. Configure it with `STALWART_WEBHOOK_TOKEN` and
+`STALWART_WEBHOOK_SIGNING_KEY`; see `STALWART_EVENT_INGESTION.md`.
+
 Customer webhook endpoints are managed under `/v1/webhooks`. Endpoint secrets
 are displayed only on creation or rotation and are derived from the stable
 `WEBHOOK_SIGNING_MASTER_KEY`; PostgreSQL stores only their hashes. Delivery
@@ -156,7 +164,7 @@ The selected provider is written to each email before it enters the queue. Each
 real provider call creates an append-only `delivery_provider_attempts` row with a
 Mailer correlation UUID and the returned provider queue ID. An SMTP `250` response
 means Stalwart queued the message; it does not prove recipient delivery. Keep SES
-events enabled for SES-routed messages until Stalwart webhook ingestion is complete.
+events enabled for SES-routed messages while those attempts remain in flight.
 When changing an existing deployment, keep all worker SES/event variables set until
 previously accepted SES messages have drained; otherwise clear the complete group.
 
@@ -210,8 +218,10 @@ are bucketed by both source IP and normalized email and return a generic failure
 for unknown users or incorrect passwords; password-reset requests are always
 accepted without revealing whether an account exists.
 
-Keep `/internal/v1/ses/events` private to the worker/VPS network in the reverse
-proxy. It still requires `EVENT_INGEST_TOKEN`, but must not be internet-facing.
+Keep `/internal/v1/ses/events` and `/internal/v1/stalwart/events` private to the
+worker/VPS networks in the reverse proxy. They still require independent bearer
+credentials, and the Stalwart endpoint additionally requires a valid body HMAC;
+neither endpoint may be internet-facing.
 Terminate TLS at the reverse proxy, enable HSTS there, and set only
 `X-Real-IP` from that trusted loopback proxy. Never set `TRUST_PROXY_HEADERS=true`
 when the API is directly exposed to the public network. Keep PostgreSQL, NATS,

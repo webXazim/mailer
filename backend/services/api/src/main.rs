@@ -6,6 +6,7 @@ mod domains;
 mod emails;
 mod ses_events;
 mod stalwart;
+mod stalwart_events;
 mod suppressions;
 mod webhooks;
 
@@ -41,6 +42,8 @@ pub(crate) struct AppState {
     mta_public_host: Option<String>,
     mta_public_ipv4: Option<String>,
     mta_return_path_prefix: String,
+    stalwart_webhook_token: Option<String>,
+    stalwart_webhook_signing_key: Option<String>,
     delivery_provider: String,
     aws_region: String,
     console_origin: String,
@@ -113,6 +116,8 @@ async fn main() -> anyhow::Result<()> {
         mta_public_host: settings.mta_public_host.clone(),
         mta_public_ipv4: settings.mta_public_ipv4.clone(),
         mta_return_path_prefix: settings.mta_return_path_prefix.clone(),
+        stalwart_webhook_token: settings.stalwart_webhook_token.clone(),
+        stalwart_webhook_signing_key: settings.stalwart_webhook_signing_key.clone(),
         delivery_provider: settings.delivery_provider.clone(),
         aws_region: settings.aws_region.clone(),
         console_origin: settings.console_origin.clone(),
@@ -142,6 +147,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(dns_automation::routes())
         .merge(emails::routes())
         .merge(ses_events::routes())
+        .merge(stalwart_events::routes())
         .merge(webhooks::routes())
         .merge(activity::routes())
         .merge(suppressions::routes())

@@ -7,7 +7,7 @@ services are intentionally outside this repository.
 
 - [`frontend/`](frontend/README.md): React, Vite, and TypeScript console.
 - [`backend/`](backend/README.md): Rust/Axum API, worker, PostgreSQL, NATS
-  JetStream, SES, and R2 integration.
+  JetStream, selectable SES/SMTP delivery, and R2 integration.
 
 Run all normal development, verification, Docker, and deployment commands from
 this directory through `sh manage`. The `Makefile` provides optional aliases.
@@ -59,7 +59,7 @@ sh manage deploy
 
 `production-init` creates `.env` with four independent random local secrets and
 refuses to overwrite an existing file. Enter the tunnel token, separate API and
-worker AWS credentials, SES/SQS event configuration, and R2 bucket credentials
+provider credentials, SES/SQS event configuration when SES is selected, and R2 bucket credentials
 at the **top** of the file. The lower section contains runtime defaults. If you
 securely copy an existing `.env`, skip initialization and keep its secrets.
 The ignored local `.env` is never delivered by Git; transfer it securely or enter
@@ -69,7 +69,12 @@ assignments; single-quote values containing `$`, spaces or `#`.
 Additional values at the top of `.env`:
 
 - `SES_CONFIGURATION_SET`: the exact SES configuration-set name whose event destination
-  publishes to your SNS topic. Every production developer send selects it.
+  publishes to your SNS topic. Required when `DELIVERY_PROVIDER=ses`.
+- `DELIVERY_PROVIDER`: `ses` for the existing managed transport or `smtp` for an
+  authenticated SMTP relay such as the isolated Stalwart deployment.
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and
+  `SMTP_HELO_NAME`: required when `DELIVERY_PROVIDER=smtp`. Use port 465 with
+  `implicit_tls`, or port 587 with `starttls`; plaintext submission is unsupported.
 - `AUTH_EMAIL_DELIVERY_ENABLED`: leave `false` to let new users sign in immediately;
   set `true` after verification and password-recovery email delivery is ready.
 - `ACCOUNT_EMAIL_API_KEY`: a production (`cs_live_...`) Mailer key with only
@@ -102,9 +107,10 @@ automatically and starts in **Test**:
 send from `sender@sandbox.mailer.invalid`, create a test key, and inspect the resulting
 email/events. No domain or real recipient is needed for that simulation. Then add a
 domain you control and publish its ownership TXT/DKIM/MAIL FROM records. Mailer checks
-DNS and SES automatically. Once the domain is verified, the workspace can create a
-**Production** key for real messages. The Amazon SES account must have production access
-in the configured `AWS_REGION`; sandbox accounts restrict recipients.
+DNS and the configured domain provider automatically. Once the domain is verified, the
+workspace can create a **Production** key for real messages. Domain provisioning still
+uses SES during this transition. SES delivery also requires production access in the
+configured `AWS_REGION`; SMTP delivery requires an authenticated, production-ready relay.
 
 In the Cloudflare dashboard, configure the supplied tunnel's published application:
 
@@ -176,7 +182,7 @@ your VPS by this change.
 ### Testing and customer-launch checklist
 
 Use `APP_ENV=production` even for VPS testing so HTTPS cookies and production
-validation stay enabled. This requires real SES/SQS and R2 settings; test API keys
+validation stay enabled. This requires real selected-provider and R2 settings; test API keys
 and test-environment email submissions simulate delivery. They do not exercise
 real SES delivery. See [backend configuration](backend/README.md) for IAM,
 SES event setup and a real delivery test. Cloudflare Tunnel carries HTTP traffic;

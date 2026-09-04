@@ -63,7 +63,7 @@ async fn list(
     }
     let environment = key_env.or(page.environment.clone());
     let (limit, offset) = page.bounds();
-    let rows=sqlx::query_scalar::<_,Value>("SELECT jsonb_build_object('id',e.id,'environment',e.environment,'from',e.sender,'subject',e.subject,'status',e.status,'acceptedAt',e.accepted_at,'sentAt',e.sent_at,'completedAt',e.completed_at,'lastError',e.last_error,'metadata',e.metadata,'recipients',COALESCE((SELECT jsonb_agg(jsonb_build_object('address',r.address,'type',r.recipient_type,'status',r.status) ORDER BY r.address) FROM email_recipients r WHERE r.email_id=e.id),'[]'::jsonb)) FROM emails e WHERE e.workspace_id=$1 AND ($2::text IS NULL OR e.environment=$2) ORDER BY e.accepted_at DESC,e.id DESC LIMIT $3 OFFSET $4")
+    let rows=sqlx::query_scalar::<_,Value>("SELECT jsonb_build_object('id',e.id,'environment',e.environment,'deliveryProvider',e.delivery_provider,'from',e.sender,'subject',e.subject,'status',e.status,'acceptedAt',e.accepted_at,'sentAt',e.sent_at,'completedAt',e.completed_at,'lastError',e.last_error,'metadata',e.metadata,'recipients',COALESCE((SELECT jsonb_agg(jsonb_build_object('address',r.address,'type',r.recipient_type,'status',r.status) ORDER BY r.address) FROM email_recipients r WHERE r.email_id=e.id),'[]'::jsonb)) FROM emails e WHERE e.workspace_id=$1 AND ($2::text IS NULL OR e.environment=$2) ORDER BY e.accepted_at DESC,e.id DESC LIMIT $3 OFFSET $4")
         .bind(workspace).bind(environment).bind(limit+1).bind(offset).fetch_all(&state.db).await;
     match rows {
         Ok(mut rows) => {
@@ -93,7 +93,9 @@ async fn retrieve(
     };
     let recipients=sqlx::query_scalar::<_,Value>("SELECT jsonb_build_object('address',address,'type',recipient_type,'status',status) FROM email_recipients WHERE email_id=$1 ORDER BY address").bind(id).fetch_all(&state.db).await;
     let events=sqlx::query_scalar::<_,Value>("SELECT jsonb_build_object('id',id,'type','email.'||event_type,'recipient',recipient,'occurredAt',occurred_at,'data',payload) FROM delivery_events WHERE email_id=$1 ORDER BY occurred_at DESC LIMIT 100").bind(id).fetch_all(&state.db).await;
-    let (Ok(recipients), Ok(events)) = (recipients, events) else {
+    let attempts=sqlx::query_scalar::<_,Value>("SELECT jsonb_build_object('id',id,'provider',provider,'attemptNumber',attempt_number,'status',status,'providerMessageId',provider_message_id,'error',error,'startedAt',started_at,'completedAt',completed_at) FROM delivery_provider_attempts WHERE email_id=$1 ORDER BY attempt_number DESC")
+        .bind(id).fetch_all(&state.db).await;
+    let (Ok(recipients), Ok(events), Ok(attempts)) = (recipients, events, attempts) else {
         return failure(
             StatusCode::SERVICE_UNAVAILABLE,
             "database_unavailable",
@@ -128,5 +130,5 @@ async fn retrieve(
             }
         }
     }
-    Json(json!({"data":{"id":id,"environment":row.get::<String,_>("environment"),"from":row.get::<String,_>("sender"),"subject":row.get::<String,_>("subject"),"status":row.get::<String,_>("status"),"acceptedAt":row.get::<chrono::DateTime<chrono::Utc>,_>("accepted_at"),"sentAt":row.get::<Option<chrono::DateTime<chrono::Utc>>,_>("sent_at"),"completedAt":row.get::<Option<chrono::DateTime<chrono::Utc>>,_>("completed_at"),"lastError":row.get::<Option<String>,_>("last_error"),"providerMessageId":row.get::<Option<String>,_>("provider_message_id"),"metadata":row.get::<Value,_>("metadata"),"recipients":recipients,"events":events,"content":content,"contentAvailable":content_available}})).into_response()
+    Json(json!({"data":{"id":id,"environment":row.get::<String,_>("environment"),"deliveryProvider":row.get::<String,_>("delivery_provider"),"from":row.get::<String,_>("sender"),"subject":row.get::<String,_>("subject"),"status":row.get::<String,_>("status"),"acceptedAt":row.get::<chrono::DateTime<chrono::Utc>,_>("accepted_at"),"sentAt":row.get::<Option<chrono::DateTime<chrono::Utc>>,_>("sent_at"),"completedAt":row.get::<Option<chrono::DateTime<chrono::Utc>>,_>("completed_at"),"lastError":row.get::<Option<String>,_>("last_error"),"providerMessageId":row.get::<Option<String>,_>("provider_message_id"),"providerAttempts":attempts,"metadata":row.get::<Value,_>("metadata"),"recipients":recipients,"events":events,"content":content,"contentAvailable":content_available}})).into_response()
 }

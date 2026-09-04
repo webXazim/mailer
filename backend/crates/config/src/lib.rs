@@ -15,6 +15,14 @@ pub struct Settings {
     pub console_origin: String,
     pub aws_region: String,
     pub ses_configuration_set: Option<String>,
+    pub delivery_provider: String,
+    pub smtp_host: Option<String>,
+    pub smtp_port: u16,
+    pub smtp_security: String,
+    pub smtp_username: Option<String>,
+    pub smtp_password: Option<String>,
+    pub smtp_helo_name: Option<String>,
+    pub smtp_timeout_seconds: u64,
     pub account_email_from: Option<String>,
     pub account_email_api_key: Option<String>,
     pub auth_email_delivery_enabled: bool,
@@ -60,6 +68,19 @@ impl Settings {
             env::var("CONSOLE_ORIGIN").unwrap_or_else(|_| "http://localhost:5173".into());
         let aws_region = env::var("AWS_REGION").unwrap_or_else(|_| "ap-southeast-1".into());
         let ses_configuration_set = optional("SES_CONFIGURATION_SET");
+        let delivery_provider = env::var("DELIVERY_PROVIDER").unwrap_or_else(|_| "ses".into());
+        let smtp_host = optional("SMTP_HOST");
+        let smtp_port_value = parse_u32("SMTP_PORT", 465)?;
+        let smtp_port =
+            u16::try_from(smtp_port_value).context("SMTP_PORT is outside the port range")?;
+        if smtp_port == 0 {
+            bail!("SMTP_PORT must be positive");
+        }
+        let smtp_security = env::var("SMTP_SECURITY").unwrap_or_else(|_| "implicit_tls".into());
+        let smtp_username = optional("SMTP_USERNAME");
+        let smtp_password = optional("SMTP_PASSWORD");
+        let smtp_helo_name = optional("SMTP_HELO_NAME");
+        let smtp_timeout_seconds = parse_u64("SMTP_TIMEOUT_SECONDS", 30)?;
         let account_email_from = optional("ACCOUNT_EMAIL_FROM");
         let account_email_api_key = optional("ACCOUNT_EMAIL_API_KEY");
         let auth_email_delivery_enabled = parse_bool("AUTH_EMAIL_DELIVERY_ENABLED", false)?;
@@ -109,6 +130,26 @@ impl Settings {
         if !matches!(domain_provider.as_str(), "disabled" | "ses") {
             bail!("DOMAIN_PROVIDER must be disabled or ses");
         }
+        if !matches!(delivery_provider.as_str(), "ses" | "smtp") {
+            bail!("DELIVERY_PROVIDER must be ses or smtp");
+        }
+        if !matches!(smtp_security.as_str(), "implicit_tls" | "starttls") {
+            bail!("SMTP_SECURITY must be implicit_tls or starttls");
+        }
+        if smtp_timeout_seconds == 0 || smtp_timeout_seconds > 300 {
+            bail!("SMTP_TIMEOUT_SECONDS must be between 1 and 300");
+        }
+        if delivery_provider == "smtp"
+            && (smtp_host.is_none()
+                || smtp_username.is_none()
+                || smtp_password.is_none()
+                || smtp_helo_name.is_none())
+        {
+            bail!("SMTP_HOST, SMTP_USERNAME, SMTP_PASSWORD, and SMTP_HELO_NAME are required when DELIVERY_PROVIDER=smtp");
+        }
+        if ses_events_queue_url.is_some() != ses_events_topic_arn.is_some() {
+            bail!("SES_EVENTS_QUEUE_URL and SES_EVENTS_TOPIC_ARN must be set together");
+        }
         if !matches!(object_storage_provider.as_str(), "disabled" | "r2" | "s3") {
             bail!("OBJECT_STORAGE_PROVIDER must be disabled, r2, or s3");
         }
@@ -131,13 +172,12 @@ impl Settings {
             bail!("DB_MAX_CONNECTIONS must be greater than or equal to DB_MIN_CONNECTIONS, and both must be positive");
         }
         if app_env == "production" {
-            if ses_configuration_set.is_none()
-                || turnstile_site_key.is_none()
+            if turnstile_site_key.is_none()
                 || turnstile_secret_key
                     .as_ref()
                     .is_none_or(|value| value.len() < 20)
             {
-                bail!("Production requires SES_CONFIGURATION_SET, TURNSTILE_SITE_KEY and a valid TURNSTILE_SECRET_KEY");
+                bail!("Production requires TURNSTILE_SITE_KEY and a valid TURNSTILE_SECRET_KEY");
             }
             if auth_email_delivery_enabled && account_email_from.is_none() {
                 bail!("ACCOUNT_EMAIL_FROM is required when AUTH_EMAIL_DELIVERY_ENABLED=true");
@@ -169,16 +209,21 @@ impl Settings {
             if domain_provider != "ses" {
                 bail!("DOMAIN_PROVIDER must be ses in production");
             }
-            if ses_events_queue_url.is_none()
-                || ses_events_topic_arn.is_none()
-                || ses_events_queue_url
-                    .as_deref()
-                    .is_some_and(|value| value.contains("ACCOUNT_ID"))
-                || ses_events_topic_arn
-                    .as_deref()
-                    .is_some_and(|value| value.contains("ACCOUNT_ID"))
-            {
-                bail!("SES_EVENTS_QUEUE_URL and SES_EVENTS_TOPIC_ARN are required in production");
+            if delivery_provider == "ses" {
+                if ses_configuration_set.is_none() {
+                    bail!("SES_CONFIGURATION_SET is required when DELIVERY_PROVIDER=ses");
+                }
+                if ses_events_queue_url.is_none()
+                    || ses_events_topic_arn.is_none()
+                    || ses_events_queue_url
+                        .as_deref()
+                        .is_some_and(|value| value.contains("ACCOUNT_ID"))
+                    || ses_events_topic_arn
+                        .as_deref()
+                        .is_some_and(|value| value.contains("ACCOUNT_ID"))
+                {
+                    bail!("SES_EVENTS_QUEUE_URL and SES_EVENTS_TOPIC_ARN are required when DELIVERY_PROVIDER=ses");
+                }
             }
             if object_storage_provider == "disabled" {
                 bail!("OBJECT_STORAGE_PROVIDER must be enabled in production");
@@ -215,6 +260,14 @@ impl Settings {
             console_origin,
             aws_region,
             ses_configuration_set,
+            delivery_provider,
+            smtp_host,
+            smtp_port,
+            smtp_security,
+            smtp_username,
+            smtp_password,
+            smtp_helo_name,
+            smtp_timeout_seconds,
             account_email_from,
             account_email_api_key,
             auth_email_delivery_enabled,

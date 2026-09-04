@@ -8,11 +8,38 @@ test "$(stat -c '%a' .env)" = 600 || fail 'Run chmod 600 .env.'
 set -a
 . ./.env
 set +a
-for name in CLOUDFLARE_TUNNEL_TOKEN TURNSTILE_SITE_KEY TURNSTILE_SECRET_KEY POSTGRES_PASSWORD NATS_PASSWORD EVENT_INGEST_TOKEN WEBHOOK_SIGNING_MASTER_KEY API_AWS_ACCESS_KEY_ID API_AWS_SECRET_ACCESS_KEY WORKER_AWS_ACCESS_KEY_ID WORKER_AWS_SECRET_ACCESS_KEY SES_EVENTS_QUEUE_URL SES_EVENTS_TOPIC_ARN SES_CONFIGURATION_SET OBJECT_STORAGE_ENDPOINT OBJECT_STORAGE_BUCKET OBJECT_STORAGE_ACCESS_KEY_ID OBJECT_STORAGE_SECRET_ACCESS_KEY; do
+for name in CLOUDFLARE_TUNNEL_TOKEN TURNSTILE_SITE_KEY TURNSTILE_SECRET_KEY POSTGRES_PASSWORD NATS_PASSWORD EVENT_INGEST_TOKEN WEBHOOK_SIGNING_MASTER_KEY API_AWS_ACCESS_KEY_ID API_AWS_SECRET_ACCESS_KEY OBJECT_STORAGE_ENDPOINT OBJECT_STORAGE_BUCKET OBJECT_STORAGE_ACCESS_KEY_ID OBJECT_STORAGE_SECRET_ACCESS_KEY; do
     eval "value=\${$name:-}"
     test -n "$value" || fail "$name is required (see the top of .env)."
     case "$value" in *REPLACE*|*ACCOUNT_ID*|*change-me*|*mailer-development*) fail "$name still contains a placeholder." ;; esac
 done
+case "${DELIVERY_PROVIDER:-ses}" in
+    ses)
+        for name in WORKER_AWS_ACCESS_KEY_ID WORKER_AWS_SECRET_ACCESS_KEY SES_EVENTS_QUEUE_URL SES_EVENTS_TOPIC_ARN SES_CONFIGURATION_SET; do
+            eval "value=\${$name:-}"
+            test -n "$value" || fail "$name is required when DELIVERY_PROVIDER=ses."
+            case "$value" in *REPLACE*|*ACCOUNT_ID*|*change-me*) fail "$name still contains a placeholder." ;; esac
+        done
+        ;;
+    smtp)
+        for name in SMTP_HOST SMTP_USERNAME SMTP_PASSWORD SMTP_HELO_NAME; do
+            eval "value=\${$name:-}"
+            test -n "$value" || fail "$name is required when DELIVERY_PROVIDER=smtp."
+            case "$value" in *REPLACE*|*change-me*) fail "$name still contains a placeholder." ;; esac
+        done
+        case "${SMTP_PORT:-465}" in ''|*[!0-9]*|0) fail 'SMTP_PORT must be a positive port number.' ;; esac
+        test "${SMTP_PORT:-465}" -le 65535 || fail 'SMTP_PORT is outside the port range.'
+        case "${SMTP_SECURITY:-implicit_tls}" in implicit_tls|starttls) ;; *) fail 'SMTP_SECURITY must be implicit_tls or starttls.' ;; esac
+        case "${SMTP_TIMEOUT_SECONDS:-30}" in ''|*[!0-9]*|0) fail 'SMTP_TIMEOUT_SECONDS must be a positive integer.' ;; esac
+        if test -n "${WORKER_AWS_ACCESS_KEY_ID:-}${WORKER_AWS_SECRET_ACCESS_KEY:-}${SES_EVENTS_QUEUE_URL:-}${SES_EVENTS_TOPIC_ARN:-}${SES_CONFIGURATION_SET:-}"; then
+            for name in WORKER_AWS_ACCESS_KEY_ID WORKER_AWS_SECRET_ACCESS_KEY SES_EVENTS_QUEUE_URL SES_EVENTS_TOPIC_ARN SES_CONFIGURATION_SET; do
+                eval "value=\${$name:-}"
+                test -n "$value" || fail "Set all SES worker/event variables to drain and observe existing SES mail, or clear all of them. Missing $name."
+            done
+        fi
+        ;;
+    *) fail 'DELIVERY_PROVIDER must be ses or smtp.' ;;
+esac
 case "${AUTH_EMAIL_DELIVERY_ENABLED:-false}" in
     true)
         test -n "${ACCOUNT_EMAIL_FROM:-}" || fail 'ACCOUNT_EMAIL_FROM is required when AUTH_EMAIL_DELIVERY_ENABLED=true.'
@@ -50,4 +77,4 @@ case "${CARGO_BUILD_JOBS:-1}" in ''|*[!0-9]*|0) fail 'CARGO_BUILD_JOBS must be a
 command -v docker >/dev/null || fail 'Install Docker Engine and the Compose plugin.'
 docker compose --project-name crescentsphere-mailer --env-file .env -f docker-compose.production.yml config --quiet
 docker info >/dev/null 2>&1 || fail 'Docker Engine is unavailable to this user.'
-echo 'Preflight passed. Provider credentials, public DNS and SES permissions still need a live test.'
+echo "Preflight passed for ${DELIVERY_PROVIDER:-ses} delivery. Provider credentials and public DNS still need a live test."

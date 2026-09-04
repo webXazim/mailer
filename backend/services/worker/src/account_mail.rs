@@ -1,6 +1,4 @@
-use super::delivery::{classify_provider_error, ProviderFailure};
 use anyhow::Result;
-use aws_sdk_sesv2::types::{Body, Content, Destination, EmailContent, Message};
 use http_body_util::{BodyExt, Full};
 use hyper::{body::Bytes, Request, StatusCode};
 use hyper_rustls::HttpsConnectorBuilder;
@@ -27,12 +25,10 @@ enum MailerFailure {
 
 enum AccountDelivery {
     Submitted(Uuid),
-    Sent(String),
 }
 
 pub async fn run(
     pool: db::DbPool,
-    ses: aws_sdk_sesv2::Client,
     from: Option<String>,
     api_url: String,
     api_key: Option<String>,
@@ -68,23 +64,14 @@ pub async fn run(
             .await
             .map(AccountDelivery::Submitted)
         } else {
-            send_via_ses(&ses, from, &recipient, &subject, &body)
-                .await
-                .map(AccountDelivery::Sent)
-                .map_err(|failure| match failure {
-                    ProviderFailure::Retryable(reason) | ProviderFailure::Ambiguous(reason) => {
-                        MailerFailure::Retryable(reason)
-                    }
-                    ProviderFailure::Permanent(reason) => MailerFailure::Permanent(reason),
-                })
+            Err(MailerFailure::Permanent(
+                "Account email requires ACCOUNT_EMAIL_API_KEY".into(),
+            ))
         };
 
         match outcome {
             Ok(AccountDelivery::Submitted(email_id)) => {
                 sqlx::query("UPDATE account_emails SET status='submitted',body='',mailer_email_id=$2,updated_at=now() WHERE id=$1").bind(id).bind(email_id).execute(&pool).await?;
-            }
-            Ok(AccountDelivery::Sent(message_id)) => {
-                sqlx::query("UPDATE account_emails SET status='sent',body='',provider_message_id=$2,updated_at=now() WHERE id=$1").bind(id).bind(message_id).execute(&pool).await?;
             }
             Err(failure) => {
                 let (retry, reason) = match failure {
@@ -152,39 +139,4 @@ where
     let response: MailerResponse = serde_json::from_slice(&bytes)
         .map_err(|error| MailerFailure::Retryable(format!("Invalid Mailer response: {error}")))?;
     Ok(response.data.id)
-}
-
-async fn send_via_ses(
-    ses: &aws_sdk_sesv2::Client,
-    from: &str,
-    recipient: &str,
-    subject: &str,
-    text: &str,
-) -> Result<String, ProviderFailure> {
-    let content = Content::builder()
-        .data(text)
-        .charset("UTF-8")
-        .build()
-        .map_err(|error| ProviderFailure::Permanent(error.to_string()))?;
-    let message = Message::builder()
-        .subject(
-            Content::builder()
-                .data(subject)
-                .charset("UTF-8")
-                .build()
-                .map_err(|error| ProviderFailure::Permanent(error.to_string()))?,
-        )
-        .body(Body::builder().text(content).build())
-        .build();
-    let response = ses
-        .send_email()
-        .from_email_address(from)
-        .destination(Destination::builder().to_addresses(recipient).build())
-        .content(EmailContent::builder().simple(message).build())
-        .send()
-        .await
-        .map_err(classify_provider_error)?;
-    response.message_id().map(str::to_owned).ok_or_else(|| {
-        ProviderFailure::Ambiguous("SES accepted account email without a message ID".into())
-    })
 }

@@ -93,6 +93,12 @@ Outlook and another independent receiver.
 
 **Outcome:** the worker can select SES or Stalwart without changing the public API.
 
+**Local implementation status:** provider selection, shared MIME generation,
+authenticated TLS SMTP submission, per-message routing, provider-attempt storage,
+configuration validation, and account-email routing are implemented. The live
+Stalwart acceptance/rejection/timeout suite is still required before this gate is
+complete or production traffic moves from SES.
+
 - Introduce a `DeliveryProvider` boundary with SES and SMTP implementations.
 - Replace production's hard requirement for `DOMAIN_PROVIDER=ses` with explicit
   delivery and domain-management settings.
@@ -107,16 +113,14 @@ Outlook and another independent receiver.
 - Add configuration similar to:
 
 ```env
-DELIVERY_PROVIDER=stalwart
+DELIVERY_PROVIDER=smtp
 SMTP_HOST=smtp.crescentsphere.com
 SMTP_PORT=465
 SMTP_SECURITY=implicit_tls
 SMTP_USERNAME=mailer-worker
 SMTP_PASSWORD=replace-with-secret
 SMTP_HELO_NAME=smtp.crescentsphere.com
-SMTP_CONNECT_TIMEOUT_SECONDS=10
-SMTP_COMMAND_TIMEOUT_SECONDS=30
-SMTP_IPV4_ONLY=true
+SMTP_TIMEOUT_SECONDS=30
 ```
 
 **Gate:** the same integration suite passes with SES and SMTP adapters, including

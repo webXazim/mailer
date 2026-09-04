@@ -38,6 +38,15 @@ stale or exhausted jobs become visible failures. Ambiguous SES acceptance is
 held for operator reconciliation instead of automatically risking a duplicate.
 Content retention also applies when final delivery feedback never arrives.
 
+The worker now has a provider-neutral delivery boundary. `DELIVERY_PROVIDER=ses`
+keeps the existing behavior, while `DELIVERY_PROVIDER=smtp` submits the same MIME
+message to an authenticated TLS SMTP relay such as Stalwart. Provider choice is
+stored when the API accepts the message, and every real submission has an
+append-only attempt record with its provider, correlation ID, outcome, and queue ID.
+Ambiguous SMTP transport failures require manual review and are never retried blindly.
+Stalwart delivery-event ingestion and provider-neutral domain provisioning remain
+separate migration gates, so switching customer traffic is not yet recommended.
+
 Migration `0015_public_signup.sql` adds verification tokens and per-workspace production
 access. Migration `0017_verified_domain_production_access.sql` unlocks production for
 workspaces with a verified sending domain. Back up before deployment.

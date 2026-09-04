@@ -383,8 +383,8 @@ async fn send_email(
             "Workspace concurrent email limit reached",
         );
     }
-    if sqlx::query("INSERT INTO emails (id, workspace_id, domain_id, api_key_id, idempotency_key, environment, sender, subject, text_body, html_body, reply_to, headers, tags, metadata, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'queued')")
-        .bind(email_id).bind(workspace_id).bind(domain_id).bind(api_key_id).bind(idempotency_key).bind(&environment).bind(input.from.trim()).bind(input.subject.trim()).bind(input.text.clone()).bind(input.html.clone()).bind(input.reply_to.clone()).bind(input.headers.clone().unwrap_or_else(|| json!({}))).bind(input.tags.clone().unwrap_or_else(|| json!([]))).bind(input.metadata.clone().unwrap_or_else(|| json!({}))).execute(&mut *tx).await.is_err() {
+    if sqlx::query("INSERT INTO emails (id, workspace_id, domain_id, api_key_id, idempotency_key, environment, sender, subject, text_body, html_body, reply_to, headers, tags, metadata, delivery_provider, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'queued')")
+        .bind(email_id).bind(workspace_id).bind(domain_id).bind(api_key_id).bind(idempotency_key).bind(&environment).bind(input.from.trim()).bind(input.subject.trim()).bind(input.text.clone()).bind(input.html.clone()).bind(input.reply_to.clone()).bind(input.headers.clone().unwrap_or_else(|| json!({}))).bind(input.tags.clone().unwrap_or_else(|| json!([]))).bind(input.metadata.clone().unwrap_or_else(|| json!({}))).bind(&state.delivery_provider).execute(&mut *tx).await.is_err() {
         return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to store email");
     }
     for (kind, address) in recipients {

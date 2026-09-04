@@ -5,6 +5,7 @@ mod events;
 mod lifecycle;
 mod maintenance;
 mod outbox;
+mod provider;
 mod webhook;
 
 use config::Settings;
@@ -40,19 +41,30 @@ async fn main() -> anyhow::Result<()> {
     let nats = nats_options.connect(nats_server).await?;
     nats.flush().await?;
     let jetstream = async_nats::jetstream::new(nats);
-    let aws = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .region(aws_config::Region::new(settings.aws_region.clone()))
-        .load()
-        .await;
-    let ses_config = aws_sdk_sesv2::config::Builder::from(&aws)
-        .retry_config(aws_config::retry::RetryConfig::standard().with_max_attempts(1))
-        .timeout_config(
-            aws_config::timeout::TimeoutConfig::builder()
-                .operation_timeout(Duration::from_secs(30))
-                .build(),
+    let needs_aws = settings.delivery_provider == "ses"
+        || settings.ses_events_queue_url.is_some();
+    let aws = if needs_aws {
+        Some(
+            aws_config::defaults(aws_config::BehaviorVersion::latest())
+                .region(aws_config::Region::new(settings.aws_region.clone()))
+                .load()
+                .await,
         )
-        .build();
-    let ses = aws_sdk_sesv2::Client::from_conf(ses_config);
+    } else {
+        None
+    };
+    let ses = aws.as_ref().map(|aws| {
+        let ses_config = aws_sdk_sesv2::config::Builder::from(aws)
+            .retry_config(aws_config::retry::RetryConfig::standard().with_max_attempts(1))
+            .timeout_config(
+                aws_config::timeout::TimeoutConfig::builder()
+                    .operation_timeout(Duration::from_secs(30))
+                    .build(),
+            )
+            .build();
+        aws_sdk_sesv2::Client::from_conf(ses_config)
+    });
+    let providers = provider::DeliveryProviders::new(ses, &settings)?;
     if settings.auth_email_delivery_enabled
         && settings.account_email_from.is_some()
         && settings
@@ -65,15 +77,16 @@ async fn main() -> anyhow::Result<()> {
     let (shutdown, stop) = tokio::sync::watch::channel(false);
     let mut account_mail = tokio::spawn(account_mail::run(
         db.clone(),
-        ses.clone(),
         settings.account_email_from.clone(),
         settings.internal_api_url.clone(),
         settings.account_email_api_key.clone(),
         stop.clone(),
     ));
     let object_store = storage::ObjectStore::from_settings(&settings).await?;
-    let sqs = aws_sdk_sqs::Client::new(&aws);
+    let sqs = aws.as_ref().map(aws_sdk_sqs::Client::new);
     let stale = sqlx::query("UPDATE emails SET status = 'failed', completed_at = now(), processing_started_at = NULL, last_error = 'ambiguous stale provider attempt; manual review required' WHERE status = 'processing' AND processing_started_at < now() - interval '15 minutes'")
+        .execute(&db).await?;
+    sqlx::query("UPDATE delivery_provider_attempts SET status='ambiguous',error='Worker stopped before recording the provider result; manual review required',completed_at=now() WHERE status='processing' AND started_at < now() - interval '15 minutes'")
         .execute(&db).await?;
     if stale.rows_affected() > 0 {
         tracing::warn!(
@@ -91,9 +104,8 @@ async fn main() -> anyhow::Result<()> {
     let mut delivery = tokio::spawn(delivery::run(
         db.clone(),
         jetstream.clone(),
-        ses,
+        providers,
         object_store,
-        settings.ses_configuration_set.clone(),
         stop.clone(),
     ));
     let lifecycle = tokio::spawn(lifecycle::run(
@@ -109,8 +121,11 @@ async fn main() -> anyhow::Result<()> {
         stop.clone(),
     ));
     let mut events = settings.ses_events_queue_url.clone().map(|queue_url| {
+        let sqs = sqs
+            .clone()
+            .expect("AWS client exists when SES event queue is configured");
         tokio::spawn(events::run(
-            sqs.clone(),
+            sqs,
             queue_url,
             settings.ses_events_topic_arn.clone(),
             settings.internal_api_url.clone(),

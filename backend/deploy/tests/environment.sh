@@ -45,6 +45,19 @@ chmod 644 .env
 if sh manage preflight >/dev/null 2>&1; then exit 1; fi
 chmod 600 .env
 cp .env valid.env
+sed -i 's/^DELIVERY_PROVIDER=ses$/DELIVERY_PROVIDER=smtp/' .env
+sed -i 's/^SMTP_HOST=$/SMTP_HOST=smtp.example.test/' .env
+sed -i 's/^SMTP_USERNAME=$/SMTP_USERNAME=mailer-worker/' .env
+sed -i 's/^SMTP_PASSWORD=$/SMTP_PASSWORD=test-smtp-password/' .env
+sed -i 's/^WORKER_AWS_ACCESS_KEY_ID=.*/WORKER_AWS_ACCESS_KEY_ID=/' .env
+sed -i 's/^WORKER_AWS_SECRET_ACCESS_KEY=.*/WORKER_AWS_SECRET_ACCESS_KEY=/' .env
+sed -i 's/^SES_EVENTS_QUEUE_URL=.*/SES_EVENTS_QUEUE_URL=/' .env
+sed -i 's/^SES_EVENTS_TOPIC_ARN=.*/SES_EVENTS_TOPIC_ARN=/' .env
+sed -i 's/^SES_CONFIGURATION_SET=.*/SES_CONFIGURATION_SET=/' .env
+sh manage preflight
+sed -i 's/^SMTP_SECURITY=implicit_tls$/SMTP_SECURITY=plaintext/' .env
+if sh manage preflight >/dev/null 2>&1; then exit 1; fi
+cp valid.env .env
 sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=unsafe-password-with-special-char@/' .env
 if sh manage preflight >/dev/null 2>&1; then exit 1; fi
 cp valid.env .env

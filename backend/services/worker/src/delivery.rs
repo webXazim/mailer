@@ -17,28 +17,30 @@ struct SendJob {
     email_id: Uuid,
 }
 
-struct Email {
-    id: Uuid,
-    environment: String,
-    sender: String,
-    subject: String,
-    text: Option<String>,
-    html: Option<String>,
-    raw_object_key: Option<String>,
-    content_checksum: Option<Vec<u8>>,
-    reply_to: Option<String>,
-    to: Vec<String>,
-    cc: Vec<String>,
-    bcc: Vec<String>,
-    attachments: Vec<Attachment>,
+pub(crate) struct Email {
+    pub(crate) id: Uuid,
+    pub(crate) attempt_id: Uuid,
+    pub(crate) environment: String,
+    pub(crate) delivery_provider: String,
+    pub(crate) sender: String,
+    pub(crate) subject: String,
+    pub(crate) text: Option<String>,
+    pub(crate) html: Option<String>,
+    pub(crate) raw_object_key: Option<String>,
+    pub(crate) content_checksum: Option<Vec<u8>>,
+    pub(crate) reply_to: Option<String>,
+    pub(crate) to: Vec<String>,
+    pub(crate) cc: Vec<String>,
+    pub(crate) bcc: Vec<String>,
+    pub(crate) attachments: Vec<Attachment>,
 }
 
-struct Attachment {
-    filename: String,
-    content_type: String,
-    content: Vec<u8>,
-    disposition: Option<String>,
-    content_id: Option<String>,
+pub(crate) struct Attachment {
+    pub(crate) filename: String,
+    pub(crate) content_type: String,
+    pub(crate) content: Vec<u8>,
+    pub(crate) disposition: Option<String>,
+    pub(crate) content_id: Option<String>,
 }
 
 enum Outcome {
@@ -58,9 +60,8 @@ pub(crate) enum ProviderFailure {
 pub async fn run(
     pool: db::DbPool,
     context: jetstream::Context,
-    ses: aws_sdk_sesv2::Client,
+    providers: super::provider::DeliveryProviders,
     object_store: Option<storage::ObjectStore>,
-    configuration_set: Option<String>,
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
     let stream = context
@@ -129,15 +130,9 @@ pub async fn run(
                 continue;
             }
         };
-        let outcome = process(
-            &pool,
-            &ses,
-            object_store.as_ref(),
-            configuration_set.as_deref(),
-            job.email_id,
-        )
-        .await
-        .unwrap_or_else(|error| Outcome::Retry(error.to_string()));
+        let outcome = process(&pool, &providers, object_store.as_ref(), job.email_id)
+            .await
+            .unwrap_or_else(|error| Outcome::Retry(error.to_string()));
         match outcome {
             Outcome::Sent(provider_id) => {
                 tracing::info!(email_id = %job.email_id, provider_message_id = %provider_id, "email sent");
@@ -184,12 +179,12 @@ pub async fn run(
 
 async fn process(
     pool: &db::DbPool,
-    ses: &aws_sdk_sesv2::Client,
+    providers: &super::provider::DeliveryProviders,
     object_store: Option<&storage::ObjectStore>,
-    configuration_set: Option<&str>,
     email_id: Uuid,
 ) -> Result<Outcome> {
-    let claimed = sqlx::query("UPDATE emails SET status = 'processing', processing_started_at = now(), processing_attempts = processing_attempts + 1, last_error = NULL WHERE id = $1 AND status = 'queued' RETURNING id, environment, sender, subject, text_body, html_body, raw_object_key, content_checksum, reply_to")
+    let attempt_id = Uuid::new_v4();
+    let claimed = sqlx::query("UPDATE emails SET status = 'processing', processing_started_at = now(), processing_attempts = processing_attempts + 1, last_error = NULL WHERE id = $1 AND status = 'queued' RETURNING id, environment, delivery_provider, sender, subject, text_body, html_body, raw_object_key, content_checksum, reply_to, processing_attempts")
         .bind(email_id).fetch_optional(pool).await?;
     let Some(row) = claimed else {
         let state = sqlx::query(
@@ -204,9 +199,12 @@ async fn process(
             Some(_) => Outcome::AlreadyHandled,
         });
     };
+    let attempt_number = row.get::<i32, _>("processing_attempts");
     let mut email = Email {
         id: row.get("id"),
+        attempt_id,
         environment: row.get("environment"),
+        delivery_provider: row.get("delivery_provider"),
         sender: row.get("sender"),
         subject: row.get("subject"),
         text: row.get("text_body"),
@@ -298,16 +296,57 @@ async fn process(
     if email.environment == "test" {
         return simulate(pool, &email).await;
     }
-    let provider_id = match send_ses(ses, &email, configuration_set).await {
+    sqlx::query("INSERT INTO delivery_provider_attempts(id,email_id,provider,attempt_number) VALUES($1,$2,$3,$4)")
+        .bind(email.attempt_id)
+        .bind(email.id)
+        .bind(&email.delivery_provider)
+        .bind(attempt_number)
+        .execute(pool)
+        .await?;
+    let provider_id = match providers.submit(&email.delivery_provider, &email).await {
         Ok(value) => value,
-        Err(ProviderFailure::Retryable(reason)) => return Ok(Outcome::Retry(reason)),
-        Err(ProviderFailure::Permanent(reason)) => return Ok(Outcome::Failed(reason)),
+        Err(ProviderFailure::Retryable(reason)) => {
+            if let Err(error) =
+                finish_provider_attempt(pool, email.attempt_id, "retryable", None, Some(&reason))
+                    .await
+            {
+                tracing::error!(attempt_id = %email.attempt_id, error = %error, "unable to record retryable provider attempt");
+            }
+            return Ok(Outcome::Retry(reason));
+        }
+        Err(ProviderFailure::Permanent(reason)) => {
+            if let Err(error) =
+                finish_provider_attempt(pool, email.attempt_id, "failed", None, Some(&reason)).await
+            {
+                tracing::error!(attempt_id = %email.attempt_id, error = %error, "unable to record permanent provider attempt");
+            }
+            return Ok(Outcome::Failed(reason));
+        }
         Err(ProviderFailure::Ambiguous(reason)) => {
+            if let Err(error) =
+                finish_provider_attempt(pool, email.attempt_id, "ambiguous", None, Some(&reason))
+                    .await
+            {
+                tracing::error!(attempt_id = %email.attempt_id, error = %error, "unable to record ambiguous provider attempt");
+            }
             return Ok(Outcome::Failed(format!(
                 "Ambiguous provider result; manual review required: {reason}"
-            )))
+            )));
         }
     };
+    if let Err(error) = finish_provider_attempt(
+        pool,
+        email.attempt_id,
+        "submitted",
+        Some(&provider_id),
+        None,
+    )
+    .await
+    {
+        return Ok(Outcome::Failed(format!(
+            "Provider accepted message; attempt recording failed; manual review required: {error}"
+        )));
+    }
     let mut tx = match pool.begin().await {
         Ok(tx) => tx,
         Err(e) => {
@@ -344,7 +383,24 @@ async fn process(
     Ok(Outcome::Sent(provider_id))
 }
 
-async fn send_ses(
+async fn finish_provider_attempt(
+    pool: &db::DbPool,
+    attempt_id: Uuid,
+    status: &str,
+    provider_message_id: Option<&str>,
+    error: Option<&str>,
+) -> Result<()> {
+    sqlx::query("UPDATE delivery_provider_attempts SET status=$2,provider_message_id=$3,error=$4,completed_at=now() WHERE id=$1 AND status='processing'")
+        .bind(attempt_id)
+        .bind(status)
+        .bind(provider_message_id)
+        .bind(error)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn send_ses(
     client: &aws_sdk_sesv2::Client,
     email: &Email,
     configuration_set: Option<&str>,
@@ -403,6 +459,33 @@ async fn send_raw_ses(
     email: &Email,
     configuration_set: Option<&str>,
 ) -> Result<String, ProviderFailure> {
+    let raw = build_raw_message(email, None)?;
+    let raw_message = aws_sdk_sesv2::types::RawMessage::builder()
+        .data(raw.into())
+        .build()
+        .map_err(|error| ProviderFailure::Permanent(error.to_string()))?;
+    let destination = Destination::builder()
+        .set_to_addresses(Some(email.to.clone()))
+        .set_cc_addresses(Some(email.cc.clone()))
+        .set_bcc_addresses(Some(email.bcc.clone()))
+        .build();
+    let response = client
+        .send_email()
+        .set_configuration_set_name(configuration_set.map(str::to_owned))
+        .destination(destination)
+        .content(EmailContent::builder().raw(raw_message).build())
+        .send()
+        .await
+        .map_err(classify_provider_error)?;
+    response.message_id().map(str::to_owned).ok_or_else(|| {
+        ProviderFailure::Ambiguous("SES raw response did not include a message ID".into())
+    })
+}
+
+pub(crate) fn build_raw_message(
+    email: &Email,
+    message_id: Option<&str>,
+) -> Result<Vec<u8>, ProviderFailure> {
     let mut builder = MessageBuilder::new().from(email.sender.as_str()).to(email
         .to
         .iter()
@@ -412,6 +495,9 @@ async fn send_raw_ses(
         builder = builder.cc(email.cc.iter().map(String::as_str).collect::<Vec<_>>());
     }
     builder = builder.subject(email.subject.as_str());
+    if let Some(message_id) = message_id {
+        builder = builder.message_id(message_id);
+    }
     if let Some(value) = &email.reply_to {
         builder = builder.reply_to(value.as_str());
     }
@@ -439,29 +525,9 @@ async fn send_raw_ses(
             );
         }
     }
-    let raw = builder
+    builder
         .write_to_vec()
-        .map_err(|error| ProviderFailure::Permanent(error.to_string()))?;
-    let raw_message = aws_sdk_sesv2::types::RawMessage::builder()
-        .data(raw.into())
-        .build()
-        .map_err(|error| ProviderFailure::Permanent(error.to_string()))?;
-    let destination = Destination::builder()
-        .set_to_addresses(Some(email.to.clone()))
-        .set_cc_addresses(Some(email.cc.clone()))
-        .set_bcc_addresses(Some(email.bcc.clone()))
-        .build();
-    let response = client
-        .send_email()
-        .set_configuration_set_name(configuration_set.map(str::to_owned))
-        .destination(destination)
-        .content(EmailContent::builder().raw(raw_message).build())
-        .send()
-        .await
-        .map_err(classify_provider_error)?;
-    response.message_id().map(str::to_owned).ok_or_else(|| {
-        ProviderFailure::Ambiguous("SES raw response did not include a message ID".into())
-    })
+        .map_err(|error| ProviderFailure::Permanent(error.to_string()))
 }
 
 async fn reset_for_retry(pool: &db::DbPool, id: Uuid, reason: &str) -> Result<()> {
@@ -589,4 +655,47 @@ async fn simulate(pool: &db::DbPool, email: &Email) -> Result<Outcome> {
     sqlx::query("UPDATE emails SET status=$2,provider_message_id=$3,sent_at=now(),completed_at=now(),processing_started_at=NULL WHERE id=$1").bind(email.id).bind(aggregate).bind(&provider_id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Outcome::Sent(provider_id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_raw_message, Attachment, Email};
+    use uuid::Uuid;
+
+    #[test]
+    fn shared_mime_contains_correlation_and_never_exposes_bcc() {
+        let email = Email {
+            id: Uuid::new_v4(),
+            attempt_id: Uuid::new_v4(),
+            environment: "production".into(),
+            delivery_provider: "smtp".into(),
+            sender: "Crescent Mail <sender@example.com>".into(),
+            subject: "Provider adapter test".into(),
+            text: Some("plain body".into()),
+            html: Some("<p>html body</p>".into()),
+            raw_object_key: None,
+            content_checksum: None,
+            reply_to: Some("reply@example.com".into()),
+            to: vec!["to@example.com".into()],
+            cc: vec!["cc@example.com".into()],
+            bcc: vec!["secret@example.com".into()],
+            attachments: vec![Attachment {
+                filename: "test.txt".into(),
+                content_type: "text/plain".into(),
+                content: b"attachment".to_vec(),
+                disposition: None,
+                content_id: None,
+            }],
+        };
+        let message_id = format!("{}.{}@smtp.example.com", email.id, email.attempt_id);
+        let raw = build_raw_message(&email, Some(&message_id)).expect("MIME must build");
+        let raw = String::from_utf8(raw).expect("MIME headers are UTF-8");
+
+        assert!(raw.contains(&message_id));
+        assert!(raw.contains("to@example.com"));
+        assert!(raw.contains("cc@example.com"));
+        assert!(!raw.contains("secret@example.com"));
+        assert!(!raw.to_ascii_lowercase().contains("\nbcc:"));
+        assert!(raw.contains("test.txt"));
+    }
 }

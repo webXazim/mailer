@@ -47,7 +47,9 @@ and transactional outbox event before returning `202 Accepted`.
 The worker publishes outbox events to a durable `MAILER_DELIVERY` JetStream
 stream and consumes them with explicit acknowledgements, bounded retries, and
 a `MAILER_DLQ` stream. Test-environment jobs are simulated locally; production
-jobs use SES. A provider timeout after SES may have accepted a message is
+jobs use the provider stored when the API accepts them. `DELIVERY_PROVIDER=ses`
+uses SES, while `DELIVERY_PROVIDER=smtp` uses authenticated TLS submission to
+Stalwart or another SMTP relay. A provider timeout after it may have accepted a message is
 treated as ambiguous: the email is quarantined for manual review after the
 provider result is uncertain instead of being silently resent. Typed throttling errors retry with backoff; automatic SDK retries are disabled for sending. Shutdown drains bounded in-flight work; maintenance reconciles stale claims and expired queues.
 
@@ -136,6 +138,23 @@ secret environment. Use separate IAM users: the API identity manages SES
 domains, while the worker identity sends through SES and consumes the event
 queue. If this later runs on AWS compute, use separate IAM roles and leave
 static access-key variables empty.
+
+### Outbound delivery provider
+
+Use `DELIVERY_PROVIDER=ses` until the Stalwart acceptance and event-ingestion
+gates are complete. To submit through Stalwart, set `DELIVERY_PROVIDER=smtp`,
+`SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and
+`SMTP_HELO_NAME`. Only implicit TLS and required STARTTLS are accepted. The worker
+uses the same MIME builder for both providers, omits Bcc from headers, and sends
+Bcc recipients only in the SMTP envelope.
+
+The selected provider is written to each email before it enters the queue. Each
+real provider call creates an append-only `delivery_provider_attempts` row with a
+Mailer correlation UUID and the returned provider queue ID. An SMTP `250` response
+means Stalwart queued the message; it does not prove recipient delivery. Keep SES
+events enabled for SES-routed messages until Stalwart webhook ingestion is complete.
+When changing an existing deployment, keep all worker SES/event variables set until
+previously accepted SES messages have drained; otherwise clear the complete group.
 
 ### Cloudflare R2
 

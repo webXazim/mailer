@@ -1,55 +1,61 @@
-# Remaining readiness work
+# Current production readiness
 
-Rechecked 2026-09-02 after the public-onboarding implementation. This is the current
-assessment; `READINESS_AUDIT.md` is the historical pre-fix review.
+Rechecked 2026-09-04 after the operational-safety and staged-delivery upgrades.
+`READINESS_AUDIT.md` remains the historical pre-fix review.
 
-The core developer workflow is implemented and locally tested. Production
-readiness is not yet established. Passing unit/integration tests does not establish
-provider delivery, operational recovery, or coverage of every failure path.
+The previously confirmed code gaps are closed and covered by a clean-database
+production smoke test:
 
-## Confirmed code and operations gaps
+- `/operationalz` detects a stale worker heartbeat, old queued mail, stalled customer
+  webhooks, and retained-content cleanup backlog.
+- The worker rechecks the sender domain while creating the provider-attempt boundary.
+  Disabling a domain blocks until that decision completes and stops later attempts.
+- Local, exhausted, maintenance, and stale-worker failures atomically create one
+  authoritative rejection event and one webhook outbox item.
+- Object-store requests and response-body reads have configurable whole-operation
+  deadlines.
+- Retained-content cleanup drains bounded batches of up to 5,000 objects per hour,
+  backs off failed objects for one hour, and exposes excessive backlog in health.
 
-| Priority | Gap | Evidence and consequence | Required completion |
-| --- | --- | --- | --- |
-| P1 | Sending can stop while public health stays green | `backend/services/api/src/main.rs:176` checks PostgreSQL and NATS, not worker progress. The production worker has no health check. `backend/deploy/healthcheck.sh` checks HTTP endpoints only. | Worker/task progress reporting and stale queue/event-ingestion alerts; prove detection by stopping or stalling the worker. |
-| P1 | Domain disable is not a queue stop | `backend/services/api/src/domains.rs:301` disables the domain locally. `backend/services/worker/src/delivery.rs:291` checks suppressions before sending but never rechecks the domain. Previously accepted messages may still send. | Recheck sender-domain authorization before provider submission; test disable after acceptance. Already in-flight provider requests cannot be recalled. |
-| P2 | Local send failures have no webhook event | `backend/services/worker/src/delivery.rs:470` persists failure without a delivery event/outbox entry. Maintenance failures have the same limitation. Provider feedback events are supported, but applications relying solely on webhooks can miss local failures. | Persist a documented failure event and outbox entry atomically, including exhausted/stale jobs. Until then poll email status. |
-| P2 | Content cleanup has a low fixed ceiling | `backend/services/worker/src/lifecycle.rs:7` runs hourly and selects at most 100 objects. At most 2,400 objects/day are removed in steady state, below the average daily volume allowed by the default 100,000 monthly submissions. Failed deletes reduce this further. | Drain bounded batches with fair progress and backlog monitoring; verify R2 lifecycle rules as a safety net. |
-| P2 | Object-storage calls lack an explicit application deadline | `backend/crates/storage/src/lib.rs` sets no total operation timeout; body collection is also unbounded by an application timeout. The sole delivery loop awaits content retrieval before sending. SDK defaults do not establish the desired whole-operation bound. | Bound storage request/body duration and exercise slow/unavailable storage, including shutdown and recovery. |
+Provider routing is guarded by a global SMTP pause, a daily admission cap,
+per-workspace cohorts, and pre-attempt-only SES rollback. `OPERATIONS.md` documents
+monitoring, rollout, incident response, and recovery.
 
-These are code-inspection findings. This follow-up did not reproduce failure cases,
-change application behavior, or rerun the earlier test suites.
+## Live acceptance gates still outstanding
 
-## Provider and VPS acceptance checks still outstanding
+These require the production VPS, DNS, real inboxes, and production credentials;
+they cannot be established by repository tests:
 
-- Configure actual SES/SNS/SQS and R2 credentials, IAM, configuration set, account
-  sender, sender DNS, and SES account access/quotas. Those values are not verified
-  by a passing configuration preflight.
-- Send to an inbox under operator control; confirm actual delivery, bounce and
-  complaint feedback, suppression, and a signed HTTPS webhook received and verified
-  by the consuming application. Verify retry after a transient receiver failure.
-- Upload/send/read an attachment through the real object store and confirm retention.
-- Deliver a password-reset email through Mailer's live API and SES, then complete the
-  browser reset flow.
-- Deploy behind the real tunnel; check HTTPS cookies, forwarding, private-route
-  blocking, resource headroom beside Docgen/Messenger, and a normal redeploy.
-- Exercise database/NATS interruptions, provider throttling, worker termination
-  during sending, and ambiguous provider acceptance. The current tests do not
-  cover these end to end.
-- Configure and rehearse encrypted offsite recovery, including PostgreSQL, NATS,
-  and R2. Verify alerts and SQS dead-letter handling. No VPS load or restore
-  rehearsal has been performed in this session.
+- Start Stalwart with its persistent volumes, verify its public TLS certificate,
+  SMTP banner, forward/reverse DNS match, outbound IPv4 path, DKIM signing, SPF,
+  DMARC, and return-path alignment.
+- Send controlled messages to Gmail, Outlook, and another provider. Confirm inbox
+  placement, a real bounce, complaint feedback where available, suppression, signed
+  webhook delivery, and retry after a temporary receiver failure.
+- Upload, send, and read a real attachment through the selected S3-compatible object
+  store. Confirm checksum validation, application cleanup, and a bucket lifecycle
+  rule as a second safety layer.
+- Exercise worker termination, PostgreSQL and NATS interruptions, Stalwart outage,
+  provider timeout, disk alert, certificate-expiry alert, and ambiguous provider
+  acceptance without producing a duplicate message.
+- Install the health and encrypted-backup timers, connect the alert destination,
+  rehearse restore of PostgreSQL plus Stalwart and object-storage data, and record
+  recovery time and data-loss windows.
+- Establish warm-up limits and review delivery reputation after each volume increase.
+  Independent SMTP removes a runtime vendor dependency but does not remove receiver
+  reputation, abuse, and blocklist dependencies.
 
-## Deliberately absent features
+## Product and policy work before broad promotion
 
-MFA, team administration, billing, templates, custom headers, and tags remain absent.
-Public signup now uses server-validated Turnstile, expiring email verification, and
-a verified-domain gate before production sending. Before broad promotion, add legal policy
-pages, account deletion/export, an approval/support process, and abuse monitoring.
-Unverified domain reservations also lack expiry/ownership-dispute administration.
+MFA, team administration, billing, templates, custom headers, tags, legal policy
+pages, account deletion/export, ownership-dispute handling, and automated anomaly
+response remain outside the current mail-delivery core. Until automated anomaly
+response is implemented, operators must review delivery reports and revoke keys,
+disable domains, and pause SMTP using the documented incident procedure.
 
-The previous passing checks remain useful evidence: 18 Rust tests, frontend
-production build, isolated API/NATS/PostgreSQL integration including public signup and
-verified-domain production access, strict production API
-startup with dummy settings, and browser flows. They support controlled testing;
-they are not a production certification.
+Current automated evidence is: 30 Rust tests, strict workspace Clippy, environment
+and reverse-proxy regression, and a clean PostgreSQL/NATS/API production smoke test
+covering migrations, routing controls, caps, worker-staleness detection, atomic local
+failures, signed Stalwart events, multi-recipient convergence, replay safety, and
+private-route isolation. This supports a controlled production pilot; it is not a
+claim of live deliverability certification.

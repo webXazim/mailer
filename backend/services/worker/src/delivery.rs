@@ -22,6 +22,7 @@ pub(crate) struct Email {
     pub(crate) attempt_id: Uuid,
     pub(crate) environment: String,
     pub(crate) delivery_provider: String,
+    pub(crate) domain_id: Option<Uuid>,
     pub(crate) sender: String,
     pub(crate) subject: String,
     pub(crate) text: Option<String>,
@@ -56,6 +57,12 @@ enum ProviderControl {
     Continue,
     RollbackToSes,
     Defer,
+}
+
+enum AttemptPreparation {
+    Ready,
+    Deferred,
+    DomainUnauthorized,
 }
 
 #[derive(Debug)]
@@ -200,7 +207,7 @@ async fn process(
     email_id: Uuid,
 ) -> Result<Outcome> {
     let attempt_id = Uuid::new_v4();
-    let claimed = sqlx::query("UPDATE emails SET status = 'processing', processing_started_at = now(), processing_attempts = processing_attempts + 1, last_error = NULL WHERE id = $1 AND status = 'queued' RETURNING id, workspace_id, environment, delivery_provider, sender, subject, text_body, html_body, raw_object_key, content_checksum, reply_to, processing_attempts")
+    let claimed = sqlx::query("UPDATE emails SET status = 'processing', processing_started_at = now(), processing_attempts = processing_attempts + 1, last_error = NULL WHERE id = $1 AND status = 'queued' RETURNING id, workspace_id, domain_id, environment, delivery_provider, sender, subject, text_body, html_body, raw_object_key, content_checksum, reply_to, processing_attempts")
         .bind(email_id).fetch_optional(pool).await?;
     let Some(row) = claimed else {
         let state = sqlx::query(
@@ -222,6 +229,7 @@ async fn process(
         attempt_id,
         environment: row.get("environment"),
         delivery_provider: row.get("delivery_provider"),
+        domain_id: row.get("domain_id"),
         sender: row.get("sender"),
         subject: row.get("subject"),
         text: row.get("text_body"),
@@ -313,10 +321,20 @@ async fn process(
     if email.environment == "test" {
         return simulate(pool, &email).await;
     }
-    if !prepare_provider_attempt(pool, providers, workspace_id, &mut email, attempt_number).await? {
-        return Ok(Outcome::Deferred(
-            "SMTP delivery is paused; no provider attempt was started".into(),
-        ));
+    match prepare_provider_attempt(pool, providers, workspace_id, &mut email, attempt_number)
+        .await?
+    {
+        AttemptPreparation::Ready => {}
+        AttemptPreparation::Deferred => {
+            return Ok(Outcome::Deferred(
+                "SMTP delivery is paused; no provider attempt was started".into(),
+            ))
+        }
+        AttemptPreparation::DomainUnauthorized => {
+            return Ok(Outcome::Failed(
+                "Sender domain was disabled or lost verification before delivery".into(),
+            ))
+        }
     }
     let provider_id = match providers.submit(&email.delivery_provider, &email).await {
         Ok(value) => value,
@@ -404,11 +422,25 @@ async fn prepare_provider_attempt(
     workspace_id: Uuid,
     email: &mut Email,
     attempt_number: i32,
-) -> Result<bool> {
+) -> Result<AttemptPreparation> {
     let mut tx = pool.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('delivery-routing-control',0))")
         .execute(&mut *tx)
         .await?;
+    let domain_authorized = match email.domain_id {
+        Some(domain_id) => sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM domains WHERE id=$1 AND workspace_id=$2 AND status='verified' FOR SHARE",
+        )
+        .bind(domain_id)
+        .bind(workspace_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .is_some(),
+        None => false,
+    };
+    if !domain_authorized {
+        return Ok(AttemptPreparation::DomainUnauthorized);
+    }
     if email.delivery_provider == "smtp" {
         let controls = sqlx::query(
             "SELECT smtp_paused,ses_rollback_enabled FROM delivery_operator_controls WHERE singleton=true",
@@ -428,11 +460,11 @@ async fn prepare_provider_attempt(
                     .execute(&mut *tx)
                     .await?;
                 if changed.rows_affected() != 1 {
-                    return Ok(false);
+                    return Ok(AttemptPreparation::Deferred);
                 }
                 email.delivery_provider = "ses".into();
             }
-            ProviderControl::Defer => return Ok(false),
+            ProviderControl::Defer => return Ok(AttemptPreparation::Deferred),
             ProviderControl::Continue => {}
         }
     }
@@ -444,7 +476,7 @@ async fn prepare_provider_attempt(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    Ok(true)
+    Ok(AttemptPreparation::Ready)
 }
 
 fn provider_control(
@@ -632,7 +664,11 @@ async fn defer_for_operator(pool: &db::DbPool, id: Uuid, reason: &str) -> Result
     Ok(())
 }
 async fn fail_email(pool: &db::DbPool, id: Uuid, reason: &str) -> Result<()> {
-    sqlx::query("UPDATE emails SET status = 'failed', processing_started_at = NULL, completed_at = now(), last_error = $2 WHERE id = $1 AND status IN ('queued', 'processing')").bind(id).bind(reason).execute(pool).await?;
+    sqlx::query("UPDATE emails SET status='failed',processing_started_at=NULL,completed_at=now(),last_error=$2 WHERE id=$1 AND status IN ('queued','processing')")
+        .bind(id)
+        .bind(reason)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 async fn record_dead_letter(
@@ -786,6 +822,7 @@ mod tests {
             attempt_id: Uuid::new_v4(),
             environment: "production".into(),
             delivery_provider: "smtp".into(),
+            domain_id: Some(Uuid::new_v4()),
             sender: "Crescent Mail <sender@example.com>".into(),
             subject: "Provider adapter test".into(),
             text: Some("plain body".into()),

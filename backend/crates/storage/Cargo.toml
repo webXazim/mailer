@@ -10,3 +10,4 @@ aws-config.workspace = true
 aws-sdk-s3.workspace = true
 config.workspace = true
 sha2.workspace = true
+tokio.workspace = true

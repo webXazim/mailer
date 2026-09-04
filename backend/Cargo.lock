@@ -1072,6 +1072,7 @@ dependencies = [
  "aws-sdk-s3",
  "cs-mail-config",
  "sha2 0.10.9",
+ "tokio",
 ]
 
 [[package]]

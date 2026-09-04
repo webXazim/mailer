@@ -2,6 +2,7 @@ use std::time::Duration;
 mod account_mail;
 mod delivery;
 mod events;
+mod heartbeat;
 mod lifecycle;
 mod maintenance;
 mod outbox;
@@ -100,6 +101,7 @@ async fn main() -> anyhow::Result<()> {
         "delivery worker started"
     );
     let mut outbox = tokio::spawn(outbox::run(db.clone(), jetstream.clone()));
+    let mut heartbeat = tokio::spawn(heartbeat::run(db.clone(), stop.clone()));
     let mut delivery = tokio::spawn(delivery::run(
         db.clone(),
         jetstream.clone(),
@@ -135,6 +137,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::select! {
         _ = shutdown_signal() => {},
         result = &mut outbox => { tracing::error!(?result,"outbox stopped"); },
+        result = &mut heartbeat => { tracing::error!(?result,"heartbeat stopped"); },
         result = &mut account_mail => { tracing::error!(?result,"account mail stopped"); },
         result = &mut delivery => {
             match result { Ok(Ok(())) => tracing::warn!("delivery loop stopped"), Ok(Err(error)) => tracing::error!(error = %error, "delivery loop failed"), Err(error) => tracing::error!(error = %error, "delivery task panicked") }
@@ -162,6 +165,7 @@ async fn main() -> anyhow::Result<()> {
     .await;
     account_mail.abort();
     outbox.abort();
+    heartbeat.abort();
     delivery.abort();
     webhook.abort();
     if let Some(task) = events {

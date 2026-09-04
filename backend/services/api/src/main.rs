@@ -64,6 +64,7 @@ pub(crate) struct AppState {
     trust_proxy_headers: bool,
     workspace_monthly_email_limit: u64,
     workspace_concurrent_email_limit: u32,
+    email_content_retention_days: u32,
 }
 
 #[tokio::main]
@@ -146,11 +147,13 @@ async fn main() -> anyhow::Result<()> {
         trust_proxy_headers: settings.trust_proxy_headers,
         workspace_monthly_email_limit: settings.workspace_monthly_email_limit,
         workspace_concurrent_email_limit: settings.workspace_concurrent_email_limit,
+        email_content_retention_days: settings.email_content_retention_days,
     };
     let _domain_verifier = tokio::spawn(domains::run_verifier(state.clone()));
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .route("/operationalz", get(operationalz))
         .merge(auth::routes())
         .merge(api_keys::routes())
         .merge(domains::routes())
@@ -239,6 +242,43 @@ async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
             "status": if status == StatusCode::OK { "ready" } else { "unavailable" },
             "environment": state.environment,
             "dependencies": { "database": database_ready, "nats": nats_ready }
+        })),
+    )
+}
+
+async fn operationalz(State(state): State<AppState>) -> impl IntoResponse {
+    let worker = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM service_heartbeats WHERE component='worker' AND updated_at>now()-interval '45 seconds')",
+    )
+    .fetch_one(&state.db);
+    let queue = sqlx::query_scalar::<_, bool>(
+        "SELECT NOT EXISTS(SELECT 1 FROM emails WHERE status='queued' AND accepted_at<now()-interval '15 minutes')",
+    )
+    .fetch_one(&state.db);
+    let webhooks = sqlx::query_scalar::<_, bool>(
+        "SELECT NOT EXISTS(SELECT 1 FROM webhook_deliveries WHERE status='pending' AND next_attempt_at<now()-interval '15 minutes')",
+    )
+    .fetch_one(&state.db);
+    let cleanup = sqlx::query_scalar::<_, bool>(
+        "SELECT count(*)<=5000 FROM emails WHERE raw_object_key IS NOT NULL AND content_deleted_at IS NULL AND COALESCE(completed_at,sent_at,accepted_at)<now()-make_interval(days=>$1)",
+    )
+    .bind(i32::try_from(state.email_content_retention_days).unwrap_or(30))
+    .fetch_one(&state.db);
+    let (worker, queue, webhooks, cleanup) = tokio::join!(worker, queue, webhooks, cleanup);
+    let worker = worker.unwrap_or(false);
+    let queue = queue.unwrap_or(false);
+    let webhooks = webhooks.unwrap_or(false);
+    let cleanup = cleanup.unwrap_or(false);
+    let status = if worker && queue && webhooks && cleanup {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (
+        status,
+        Json(json!({
+            "status": if status == StatusCode::OK { "operational" } else { "degraded" },
+            "checks": { "worker": worker, "deliveryQueue": queue, "customerWebhooks": webhooks, "contentCleanup": cleanup }
         })),
     )
 }

@@ -54,6 +54,7 @@ pub struct Settings {
     pub object_storage_bucket: Option<String>,
     pub object_storage_access_key_id: Option<String>,
     pub object_storage_secret_access_key: Option<String>,
+    pub object_storage_timeout_seconds: u64,
     pub email_content_retention_days: u32,
     pub api_key_rate_limit_per_minute: u32,
     pub client_ip_rate_limit_per_minute: u32,
@@ -130,6 +131,7 @@ impl Settings {
         let object_storage_bucket = optional("OBJECT_STORAGE_BUCKET");
         let object_storage_access_key_id = optional("OBJECT_STORAGE_ACCESS_KEY_ID");
         let object_storage_secret_access_key = optional("OBJECT_STORAGE_SECRET_ACCESS_KEY");
+        let object_storage_timeout_seconds = parse_u64("OBJECT_STORAGE_TIMEOUT_SECONDS", 30)?;
         let email_content_retention_days = parse_u32("EMAIL_CONTENT_RETENTION_DAYS", 30)?;
         let api_key_rate_limit_per_minute = parse_u32("API_KEY_RATE_LIMIT_PER_MINUTE", 60)?;
         let client_ip_rate_limit_per_minute = parse_u32("CLIENT_IP_RATE_LIMIT_PER_MINUTE", 300)?;
@@ -249,6 +251,9 @@ impl Settings {
                 || object_storage_secret_access_key.is_none())
         {
             bail!("OBJECT_STORAGE_ENDPOINT, OBJECT_STORAGE_BUCKET, OBJECT_STORAGE_ACCESS_KEY_ID, and OBJECT_STORAGE_SECRET_ACCESS_KEY are required when object storage is enabled");
+        }
+        if object_storage_timeout_seconds == 0 || object_storage_timeout_seconds > 300 {
+            bail!("OBJECT_STORAGE_TIMEOUT_SECONDS must be between 1 and 300");
         }
         if cloudflare_oauth_client_id.is_some() != cloudflare_oauth_client_secret.is_some() {
             bail!("CLOUDFLARE_OAUTH_CLIENT_ID and CLOUDFLARE_OAUTH_CLIENT_SECRET must be set together");
@@ -384,6 +389,7 @@ impl Settings {
             object_storage_bucket,
             object_storage_access_key_id,
             object_storage_secret_access_key,
+            object_storage_timeout_seconds,
             email_content_retention_days,
             api_key_rate_limit_per_minute,
             client_ip_rate_limit_per_minute,

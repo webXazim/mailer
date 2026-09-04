@@ -2,11 +2,13 @@ use anyhow::{Context, Result};
 use aws_sdk_s3::{config::Credentials, primitives::ByteStream, Client};
 use config::Settings;
 use sha2::{Digest, Sha256};
+use std::time::Duration;
 
 #[derive(Clone)]
 pub struct ObjectStore {
     client: Client,
     bucket: String,
+    timeout: Duration,
 }
 
 impl ObjectStore {
@@ -42,35 +44,55 @@ impl ObjectStore {
             .await;
         let config = aws_sdk_s3::config::Builder::from(&sdk)
             .force_path_style(true)
+            .timeout_config(
+                aws_sdk_s3::config::timeout::TimeoutConfig::builder()
+                    .operation_timeout(Duration::from_secs(settings.object_storage_timeout_seconds))
+                    .operation_attempt_timeout(Duration::from_secs(
+                        settings.object_storage_timeout_seconds,
+                    ))
+                    .build(),
+            )
             .build();
         Ok(Some(Self {
             client: Client::from_conf(config),
             bucket,
+            timeout: Duration::from_secs(settings.object_storage_timeout_seconds),
         }))
     }
 
     pub async fn put(&self, key: &str, content: Vec<u8>) -> Result<Vec<u8>> {
         let checksum = Sha256::digest(&content).to_vec();
-        self.client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .body(ByteStream::from(content))
-            .content_type("application/json")
-            .send()
-            .await?;
+        tokio::time::timeout(
+            self.timeout,
+            self.client
+                .put_object()
+                .bucket(&self.bucket)
+                .key(key)
+                .body(ByteStream::from(content))
+                .content_type("application/json")
+                .send(),
+        )
+        .await
+        .context("object storage put timed out")??;
         Ok(checksum)
     }
 
     pub async fn get_verified(&self, key: &str, expected_checksum: &[u8]) -> Result<Vec<u8>> {
-        let result = self
-            .client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .send()
-            .await?;
-        let bytes = result.body.collect().await?.into_bytes().to_vec();
+        let result = tokio::time::timeout(
+            self.timeout,
+            self.client
+                .get_object()
+                .bucket(&self.bucket)
+                .key(key)
+                .send(),
+        )
+        .await
+        .context("object storage get timed out")??;
+        let bytes = tokio::time::timeout(self.timeout, result.body.collect())
+            .await
+            .context("object storage body timed out")??
+            .into_bytes()
+            .to_vec();
         if Sha256::digest(&bytes).as_slice() != expected_checksum {
             anyhow::bail!("object checksum mismatch");
         }
@@ -78,12 +100,16 @@ impl ObjectStore {
     }
 
     pub async fn delete(&self, key: &str) -> Result<()> {
-        self.client
-            .delete_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .send()
-            .await?;
+        tokio::time::timeout(
+            self.timeout,
+            self.client
+                .delete_object()
+                .bucket(&self.bucket)
+                .key(key)
+                .send(),
+        )
+        .await
+        .context("object storage delete timed out")??;
         Ok(())
     }
 }

@@ -1,0 +1,56 @@
+# Independent Stalwart lifecycle. Do not combine this file with the Mailer app
+# Compose files: SMTP must remain available while the application is rebuilt.
+name: crescentsphere-stalwart
+
+services:
+  stalwart:
+    image: ${STALWART_IMAGE:-stalwartlabs/stalwart:v0.16}
+    restart: unless-stopped
+    init: true
+    environment:
+      # Bootstrap/recovery access is reachable only through the loopback-bound
+      # admin port. The later hardening upgrade removes this bootstrap mechanism.
+      STALWART_RECOVERY_ADMIN: ${STALWART_RECOVERY_ADMIN:?Set STALWART_RECOVERY_ADMIN}
+      STALWART_PUBLIC_URL: ${STALWART_PUBLIC_URL:-https://smtp.crescentsphere.com}
+    ports:
+      # Bind explicitly to IPv4. IPv6 delivery stays disabled until it has a
+      # dedicated address with matching AAAA, PTR and SPF authorization.
+      - target: 25
+        published: "25"
+        host_ip: 0.0.0.0
+        protocol: tcp
+      - target: 465
+        published: "465"
+        host_ip: 0.0.0.0
+        protocol: tcp
+      - target: 587
+        published: "587"
+        host_ip: 0.0.0.0
+        protocol: tcp
+      # Access with an SSH tunnel; never publish the bootstrap UI publicly.
+      - target: 8080
+        published: ${STALWART_ADMIN_PORT:-8088}
+        host_ip: 127.0.0.1
+        protocol: tcp
+    volumes:
+      - stalwart-etc:/etc/stalwart
+      - stalwart-data:/var/lib/stalwart
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    stop_grace_period: 120s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    networks:
+      - mail-transport
+
+volumes:
+  stalwart-etc:
+  stalwart-data:
+
+networks:
+  mail-transport:
+    enable_ipv6: false

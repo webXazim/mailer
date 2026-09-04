@@ -202,6 +202,14 @@ Before customer use:
 Reference: [Cloudflare tunnel run parameters](https://developers.cloudflare.com/tunnel/advanced/run-parameters/)
 and [Docker Compose up / health waiting](https://docs.docker.com/reference/cli/docker/compose/up/).
 
+## Self-hosted mail transport
+
+The staged migration from SES delivery to an independently operated Stalwart MTA
+is documented in [SELF_HOSTED_MTA_ROADMAP.md](SELF_HOSTED_MTA_ROADMAP.md). The
+initial isolated deployment and VPS commands are in
+[STALWART_DEPLOYMENT.md](STALWART_DEPLOYMENT.md). Stalwart has a separate Compose
+project and lifecycle; it is not started, stopped, or rebuilt by `sh manage deploy`.
+
 ### Deployment regression checks
 
 On a Linux Docker host, `sh backend/deploy/tests/run.sh` checks secret generation,

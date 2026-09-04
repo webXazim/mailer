@@ -130,6 +130,11 @@ attachments, multi-recipient mail, timeouts, rejection and ambiguous acceptance.
 
 **Outcome:** new users can verify and configure domains without AWS APIs.
 
+**Local implementation status:** the provider-neutral schema, Stalwart JMAP
+domain/key provisioning, manual and Cloudflare DNS publication, public-DNS
+verification, aligned return path, DKIM rotation, and MTA disable flow are
+implemented. The live clean-workspace gate on the VPS is still required.
+
 - Replace SES-specific domain fields and DNS generation with a provider-neutral
   domain model.
 - Retain Mailer's random ownership TXT record.

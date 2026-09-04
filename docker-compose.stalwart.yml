@@ -53,4 +53,5 @@ volumes:
 
 networks:
   mail-transport:
+    name: crescentsphere-mail-transport
     enable_ipv6: false

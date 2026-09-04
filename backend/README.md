@@ -33,10 +33,14 @@ API key management is available under `/v1/api-keys`. Secrets are shown only
 on creation or rotation, stored as hashes, scoped to a workspace, and can be
 revoked or expired. The verifier enforces workspace ownership, permission scope, and the email environment. Rotation is transactional; revocation errors never return success.
 
-Domain onboarding is available under `/v1/domains`. In production,
-`DOMAIN_PROVIDER=ses` is required. Adding a domain creates an SES identity,
-configures a custom MAIL FROM subdomain, and returns the required DKIM, SPF,
-MX, DMARC, and unique ownership TXT records. Existing provider identities are reconciled after interrupted provisioning; disabling a Mailer domain preserves the SES identity so other applications are not disrupted. The API checks every pending domain in the background every 30 seconds. Public DNS lookup is independent of the user's DNS provider; only domains with verified SES sending status and required DNS records become `verified`.
+Domain onboarding is available under `/v1/domains`. `DOMAIN_PROVIDER` selects
+`ses` or `stalwart` in production. SES keeps its provider identity flow.
+Stalwart uses its authenticated JMAP management API to create or adopt a domain
+and a unique RSA DKIM key, then returns provider-neutral DKIM, return-path SPF/MX,
+DMARC, and random ownership TXT records. Manual publication works at every DNS
+provider; Cloudflare OAuth is only an optional shortcut. The API checks pending
+records every 30 seconds. DKIM rotation keeps the previous key active until the
+replacement TXT is public, and disabling a Stalwart domain disables it at the MTA.
 
 The developer submission endpoint is `POST /v1/emails`. It requires an API
 key with `emails:send` (or an owner/admin console session), a matching test/production environment, and an

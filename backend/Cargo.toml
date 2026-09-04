@@ -38,7 +38,7 @@ hyper-rustls = { version = "0.27", default-features = false, features = ["http1"
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 mail-builder = "0.4"
 lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "pool", "tokio1-rustls", "ring", "rustls-native-certs"] }
-rsa = { version = "0.9", features = ["sha1", "sha2"] }
+rsa = { version = "0.9", features = ["sha1", "sha2", "pem"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 sha1 = "0.10"
 rand = "0.8"

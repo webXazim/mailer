@@ -41,8 +41,7 @@ async fn main() -> anyhow::Result<()> {
     let nats = nats_options.connect(nats_server).await?;
     nats.flush().await?;
     let jetstream = async_nats::jetstream::new(nats);
-    let needs_aws = settings.delivery_provider == "ses"
-        || settings.ses_events_queue_url.is_some();
+    let needs_aws = settings.delivery_provider == "ses" || settings.ses_events_queue_url.is_some();
     let aws = if needs_aws {
         Some(
             aws_config::defaults(aws_config::BehaviorVersion::latest())

@@ -19,6 +19,7 @@ pub(crate) struct DeliveryProviders {
 struct SmtpProvider {
     transport: AsyncSmtpTransport<Tokio1Executor>,
     message_id_domain: String,
+    return_path_prefix: String,
 }
 
 impl DeliveryProviders {
@@ -66,6 +67,7 @@ impl DeliveryProviders {
                         .timeout(Some(Duration::from_secs(settings.smtp_timeout_seconds)))
                         .build(),
                     message_id_domain: helo_name.clone(),
+                    return_path_prefix: settings.mta_return_path_prefix.clone(),
                 })
             }
             None => None,
@@ -110,7 +112,8 @@ impl SmtpProvider {
             email.id, email.attempt_id, self.message_id_domain
         );
         let raw = build_raw_message(email, Some(&message_id))?;
-        let sender = mailbox_address(&email.sender)
+        let envelope_sender = envelope_sender(&email.sender, &self.return_path_prefix, email.id)?;
+        let sender = envelope_sender
             .parse::<Address>()
             .map_err(|error| ProviderFailure::Permanent(format!("invalid sender: {error}")))?;
         let recipients = email
@@ -142,6 +145,18 @@ fn mailbox_address(value: &str) -> &str {
     }
 }
 
+fn envelope_sender(
+    value: &str,
+    prefix: &str,
+    email_id: uuid::Uuid,
+) -> Result<String, ProviderFailure> {
+    let sender_domain = mailbox_address(value)
+        .rsplit_once('@')
+        .map(|(_, domain)| domain)
+        .ok_or_else(|| ProviderFailure::Permanent("invalid sender domain".into()))?;
+    Ok(format!("mailer+{email_id}@{prefix}.{sender_domain}"))
+}
+
 fn classify_smtp_error(error: SmtpError) -> ProviderFailure {
     let reason = format!("SMTP submission failed: {error}");
     if error.is_transient() {
@@ -157,7 +172,8 @@ fn classify_smtp_error(error: SmtpError) -> ProviderFailure {
 
 #[cfg(test)]
 mod tests {
-    use super::mailbox_address;
+    use super::{envelope_sender, mailbox_address};
+    use uuid::Uuid;
 
     #[test]
     fn extracts_envelope_sender_from_display_address() {
@@ -166,5 +182,14 @@ mod tests {
             "no-reply@mailer.example"
         );
         assert_eq!(mailbox_address("sender@example.com"), "sender@example.com");
+    }
+
+    #[test]
+    fn uses_aligned_bounce_subdomain_for_smtp_envelope() {
+        let id = Uuid::parse_str("dc2b60ed-27e3-4faa-88bc-e653d868c082").unwrap();
+        assert_eq!(
+            envelope_sender("Sender <hello@mail.example.com>", "bounce", id).unwrap(),
+            "mailer+dc2b60ed-27e3-4faa-88bc-e653d868c082@bounce.mail.example.com"
+        );
     }
 }

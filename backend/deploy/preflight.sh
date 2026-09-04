@@ -8,11 +8,31 @@ test "$(stat -c '%a' .env)" = 600 || fail 'Run chmod 600 .env.'
 set -a
 . ./.env
 set +a
-for name in CLOUDFLARE_TUNNEL_TOKEN TURNSTILE_SITE_KEY TURNSTILE_SECRET_KEY POSTGRES_PASSWORD NATS_PASSWORD EVENT_INGEST_TOKEN WEBHOOK_SIGNING_MASTER_KEY API_AWS_ACCESS_KEY_ID API_AWS_SECRET_ACCESS_KEY OBJECT_STORAGE_ENDPOINT OBJECT_STORAGE_BUCKET OBJECT_STORAGE_ACCESS_KEY_ID OBJECT_STORAGE_SECRET_ACCESS_KEY; do
+for name in CLOUDFLARE_TUNNEL_TOKEN TURNSTILE_SITE_KEY TURNSTILE_SECRET_KEY POSTGRES_PASSWORD NATS_PASSWORD EVENT_INGEST_TOKEN WEBHOOK_SIGNING_MASTER_KEY OBJECT_STORAGE_ENDPOINT OBJECT_STORAGE_BUCKET OBJECT_STORAGE_ACCESS_KEY_ID OBJECT_STORAGE_SECRET_ACCESS_KEY; do
     eval "value=\${$name:-}"
     test -n "$value" || fail "$name is required (see the top of .env)."
     case "$value" in *REPLACE*|*ACCOUNT_ID*|*change-me*|*mailer-development*) fail "$name still contains a placeholder." ;; esac
 done
+case "${DOMAIN_PROVIDER:-}" in
+    ses)
+        for name in API_AWS_ACCESS_KEY_ID API_AWS_SECRET_ACCESS_KEY; do
+            eval "value=\${$name:-}"
+            test -n "$value" || fail "$name is required when DOMAIN_PROVIDER=ses."
+            case "$value" in *REPLACE*|*change-me*) fail "$name still contains a placeholder." ;; esac
+        done
+        ;;
+    stalwart)
+        for name in STALWART_API_URL STALWART_API_TOKEN MTA_PUBLIC_HOST MTA_PUBLIC_IPV4; do
+            eval "value=\${$name:-}"
+            test -n "$value" || fail "$name is required when DOMAIN_PROVIDER=stalwart."
+            case "$value" in *REPLACE*|*change-me*) fail "$name still contains a placeholder." ;; esac
+        done
+        case "${STALWART_API_URL}" in http://*|https://*) ;; *) fail 'STALWART_API_URL must use http:// or https://.' ;; esac
+        test "${#STALWART_API_TOKEN}" -ge 32 || fail 'STALWART_API_TOKEN must contain at least 32 characters.'
+        case "${MTA_RETURN_PATH_PREFIX:-bounce}" in ''|*[!a-zA-Z0-9-]*) fail 'MTA_RETURN_PATH_PREFIX must be a DNS label.' ;; esac
+        ;;
+    *) fail 'DOMAIN_PROVIDER must be ses or stalwart.' ;;
+esac
 case "${DELIVERY_PROVIDER:-ses}" in
     ses)
         for name in WORKER_AWS_ACCESS_KEY_ID WORKER_AWS_SECRET_ACCESS_KEY SES_EVENTS_QUEUE_URL SES_EVENTS_TOPIC_ARN SES_CONFIGURATION_SET; do
@@ -68,7 +88,6 @@ for name in POSTGRES_USER POSTGRES_DB NATS_USER; do
 done
 test "${APP_ENV:-}" = production || fail 'APP_ENV must be production, including VPS tests.'
 test "${CONSOLE_ORIGIN:-}" = https://mailer.crescentsphere.com || fail 'CONSOLE_ORIGIN must be https://mailer.crescentsphere.com.'
-test "${DOMAIN_PROVIDER:-}" = ses || fail 'DOMAIN_PROVIDER must be ses.'
 case "${OBJECT_STORAGE_PROVIDER:-}" in r2|s3) ;; *) fail 'Enable r2 or s3 object storage.' ;; esac
 test "${TRUST_PROXY_HEADERS:-}" = true || fail 'TRUST_PROXY_HEADERS must be true for this private proxy topology.'
 case "${FRONTEND_PORT:-0}" in ''|*[!0-9]*) fail 'FRONTEND_PORT must be 0 (automatic) or a port number.' ;; esac
@@ -77,4 +96,7 @@ case "${CARGO_BUILD_JOBS:-1}" in ''|*[!0-9]*|0) fail 'CARGO_BUILD_JOBS must be a
 command -v docker >/dev/null || fail 'Install Docker Engine and the Compose plugin.'
 docker compose --project-name crescentsphere-mailer --env-file .env -f docker-compose.production.yml config --quiet
 docker info >/dev/null 2>&1 || fail 'Docker Engine is unavailable to this user.'
+if test "${DOMAIN_PROVIDER:-}" = stalwart; then
+    docker network inspect crescentsphere-mail-transport >/dev/null 2>&1 || fail 'Start the independent Stalwart stack before deploying Mailer.'
+fi
 echo "Preflight passed for ${DELIVERY_PROVIDER:-ses} delivery. Provider credentials and public DNS still need a live test."

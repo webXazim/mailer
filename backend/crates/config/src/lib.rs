@@ -1,6 +1,10 @@
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
-use std::{env, net::SocketAddr, time::Duration};
+use std::{
+    env,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    time::Duration,
+};
 use url::Url;
 
 const DEVELOPMENT_EVENT_TOKEN: &str = "development-event-token-change-me";
@@ -32,6 +36,11 @@ pub struct Settings {
     pub cloudflare_oauth_client_secret: Option<String>,
     pub cloudflare_oauth_scopes: String,
     pub domain_provider: String,
+    pub stalwart_api_url: Option<String>,
+    pub stalwart_api_token: Option<String>,
+    pub mta_public_host: Option<String>,
+    pub mta_public_ipv4: Option<String>,
+    pub mta_return_path_prefix: String,
     pub event_ingest_token: String,
     pub webhook_signing_master_key: String,
     pub ses_events_queue_url: Option<String>,
@@ -91,6 +100,12 @@ impl Settings {
         let cloudflare_oauth_scopes =
             env::var("CLOUDFLARE_OAUTH_SCOPES").unwrap_or_else(|_| "zone.read dns.write".into());
         let domain_provider = env::var("DOMAIN_PROVIDER").unwrap_or_else(|_| "disabled".into());
+        let stalwart_api_url = optional("STALWART_API_URL");
+        let stalwart_api_token = optional("STALWART_API_TOKEN");
+        let mta_public_host = optional("MTA_PUBLIC_HOST");
+        let mta_public_ipv4 = optional("MTA_PUBLIC_IPV4");
+        let mta_return_path_prefix =
+            env::var("MTA_RETURN_PATH_PREFIX").unwrap_or_else(|_| "bounce".into());
         let event_ingest_token =
             env::var("EVENT_INGEST_TOKEN").unwrap_or_else(|_| DEVELOPMENT_EVENT_TOKEN.into());
         let webhook_signing_master_key = env::var("WEBHOOK_SIGNING_MASTER_KEY")
@@ -127,8 +142,52 @@ impl Settings {
         if !(1..=3650).contains(&email_content_retention_days) {
             bail!("EMAIL_CONTENT_RETENTION_DAYS must be between 1 and 3650");
         }
-        if !matches!(domain_provider.as_str(), "disabled" | "ses") {
-            bail!("DOMAIN_PROVIDER must be disabled or ses");
+        if !matches!(domain_provider.as_str(), "disabled" | "ses" | "stalwart") {
+            bail!("DOMAIN_PROVIDER must be disabled, ses, or stalwart");
+        }
+        if domain_provider == "stalwart"
+            && (stalwart_api_url.is_none()
+                || stalwart_api_token.is_none()
+                || mta_public_host.is_none()
+                || mta_public_ipv4.is_none())
+        {
+            bail!("STALWART_API_URL, STALWART_API_TOKEN, MTA_PUBLIC_HOST, and MTA_PUBLIC_IPV4 are required when DOMAIN_PROVIDER=stalwart");
+        }
+        if mta_return_path_prefix.is_empty()
+            || !mta_return_path_prefix
+                .chars()
+                .all(|value| value.is_ascii_alphanumeric() || value == '-')
+        {
+            bail!("MTA_RETURN_PATH_PREFIX must be a DNS label");
+        }
+        if let Some(value) = &stalwart_api_url {
+            let url = Url::parse(value).context("STALWART_API_URL must be a valid URL")?;
+            if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+                bail!("STALWART_API_URL must be an HTTP(S) URL with a host");
+            }
+            if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+                bail!("STALWART_API_URL must be an origin URL without /api, a query, or a fragment");
+            }
+            if app_env == "production"
+                && url.scheme() == "http"
+                && !matches!(url.host_str(), Some("stalwart" | "localhost" | "127.0.0.1"))
+            {
+                bail!("STALWART_API_URL may use HTTP in production only for the private Stalwart service");
+            }
+        }
+        if domain_provider == "stalwart" {
+            let public_host = mta_public_host.as_deref().expect("checked above");
+            if !is_dns_name(public_host) || public_host.parse::<IpAddr>().is_ok() {
+                bail!("MTA_PUBLIC_HOST must be a DNS hostname");
+            }
+            mta_public_ipv4
+                .as_deref()
+                .expect("checked above")
+                .parse::<Ipv4Addr>()
+                .context("MTA_PUBLIC_IPV4 must be an IPv4 address")?;
+            if stalwart_api_token.as_deref().expect("checked above").len() < 32 {
+                bail!("STALWART_API_TOKEN must contain at least 32 characters");
+            }
         }
         if !matches!(delivery_provider.as_str(), "ses" | "smtp") {
             bail!("DELIVERY_PROVIDER must be ses or smtp");
@@ -206,8 +265,8 @@ impl Settings {
             if internal_url.host_str().is_none() {
                 bail!("INTERNAL_API_URL must include a host");
             }
-            if domain_provider != "ses" {
-                bail!("DOMAIN_PROVIDER must be ses in production");
+            if domain_provider == "disabled" {
+                bail!("DOMAIN_PROVIDER must be ses or stalwart in production");
             }
             if delivery_provider == "ses" {
                 if ses_configuration_set.is_none() {
@@ -277,6 +336,11 @@ impl Settings {
             cloudflare_oauth_client_secret,
             cloudflare_oauth_scopes,
             domain_provider,
+            stalwart_api_url,
+            stalwart_api_token,
+            mta_public_host,
+            mta_public_ipv4,
+            mta_return_path_prefix,
             event_ingest_token,
             webhook_signing_master_key,
             ses_events_queue_url,
@@ -333,4 +397,19 @@ fn parse_bool(name: &str, default: bool) -> Result<bool> {
         .unwrap_or_else(|_| default.to_string())
         .parse()
         .with_context(|| format!("{name} must be true or false"))
+}
+
+fn is_dns_name(value: &str) -> bool {
+    let value = value.trim_end_matches('.');
+    !value.is_empty()
+        && value.len() <= 253
+        && value.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        })
 }

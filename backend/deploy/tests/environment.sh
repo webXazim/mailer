@@ -29,6 +29,7 @@ for name in CLOUDFLARE_TUNNEL_TOKEN API_AWS_ACCESS_KEY_ID API_AWS_SECRET_ACCESS_
 done
 sed -i 's/^TURNSTILE_SITE_KEY=$/TURNSTILE_SITE_KEY=test-site-key/' .env
 sed -i 's/^TURNSTILE_SECRET_KEY=$/TURNSTILE_SECRET_KEY=test-secret-key-that-is-long-enough/' .env
+sed -i 's/^ACCOUNT_EMAIL_API_KEY=$/ACCOUNT_EMAIL_API_KEY=cs_live_test-account-email-key/' .env
 # The shim verifies command sequencing without contacting Docker or providers.
 cat >bin/docker <<'EOF'
 #!/bin/sh
@@ -57,6 +58,11 @@ sed -i 's/^SES_CONFIGURATION_SET=.*/SES_CONFIGURATION_SET=/' .env
 sh manage preflight
 sed -i 's/^SMTP_SECURITY=implicit_tls$/SMTP_SECURITY=plaintext/' .env
 if sh manage preflight >/dev/null 2>&1; then exit 1; fi
+cp valid.env .env
+sed -i 's/^DOMAIN_PROVIDER=ses$/DOMAIN_PROVIDER=stalwart/' .env
+sed -i 's|^STALWART_API_URL=$|STALWART_API_URL=http://stalwart:8080|' .env
+sed -i 's/^STALWART_API_TOKEN=$/STALWART_API_TOKEN=0123456789abcdef0123456789abcdef/' .env
+sh manage preflight
 cp valid.env .env
 sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=unsafe-password-with-special-char@/' .env
 if sh manage preflight >/dev/null 2>&1; then exit 1; fi

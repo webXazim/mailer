@@ -5,6 +5,7 @@ mod dns_automation;
 mod domains;
 mod emails;
 mod ses_events;
+mod stalwart;
 mod suppressions;
 mod webhooks;
 
@@ -35,6 +36,11 @@ pub(crate) struct AppState {
     db: db::DbPool,
     nats: async_nats::Client,
     ses: Option<aws_sdk_sesv2::Client>,
+    domain_provider: String,
+    stalwart: Option<stalwart::Client>,
+    mta_public_host: Option<String>,
+    mta_public_ipv4: Option<String>,
+    mta_return_path_prefix: String,
     delivery_provider: String,
     aws_region: String,
     console_origin: String,
@@ -92,12 +98,21 @@ async fn main() -> anyhow::Result<()> {
         None
     };
     let object_store = storage::ObjectStore::from_settings(&settings).await?;
+    let stalwart = match (&settings.stalwart_api_url, &settings.stalwart_api_token) {
+        (Some(url), Some(token)) => Some(stalwart::Client::new(url.clone(), token.clone())),
+        _ => None,
+    };
     let console_origin: HeaderValue = settings.console_origin.parse()?;
     let state = AppState {
         environment: settings.app_env.clone(),
         db,
         nats,
         ses,
+        domain_provider: settings.domain_provider.clone(),
+        stalwart,
+        mta_public_host: settings.mta_public_host.clone(),
+        mta_public_ipv4: settings.mta_public_ipv4.clone(),
+        mta_return_path_prefix: settings.mta_return_path_prefix.clone(),
         delivery_provider: settings.delivery_provider.clone(),
         aws_region: settings.aws_region.clone(),
         console_origin: settings.console_origin.clone(),

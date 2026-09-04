@@ -32,6 +32,11 @@ x-app-environment: &app-environment
   CLOUDFLARE_OAUTH_CLIENT_SECRET: ${CLOUDFLARE_OAUTH_CLIENT_SECRET:-}
   CLOUDFLARE_OAUTH_SCOPES: ${CLOUDFLARE_OAUTH_SCOPES:-zone.read dns.write}
   DOMAIN_PROVIDER: ${DOMAIN_PROVIDER:-ses}
+  STALWART_API_URL: ${STALWART_API_URL:-}
+  STALWART_API_TOKEN: ${STALWART_API_TOKEN:-}
+  MTA_PUBLIC_HOST: ${MTA_PUBLIC_HOST:-}
+  MTA_PUBLIC_IPV4: ${MTA_PUBLIC_IPV4:-}
+  MTA_RETURN_PATH_PREFIX: ${MTA_RETURN_PATH_PREFIX:-bounce}
   SES_EVENTS_QUEUE_URL: ${SES_EVENTS_QUEUE_URL:-}
   SES_EVENTS_TOPIC_ARN: ${SES_EVENTS_TOPIC_ARN:-}
   OBJECT_STORAGE_PROVIDER: ${OBJECT_STORAGE_PROVIDER:-r2}
@@ -89,7 +94,7 @@ services:
       options:
         max-size: "20m"
         max-file: "5"
-    networks: [edge, internal]
+    networks: [edge, internal, mail-transport]
 
   frontend:
     mem_limit: ${FRONTEND_MEMORY_LIMIT:-64m}
@@ -223,3 +228,6 @@ networks:
   edge:
   internal:
     internal: true
+  mail-transport:
+    name: crescentsphere-mail-transport
+    external: true

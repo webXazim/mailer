@@ -108,9 +108,10 @@ send from `sender@sandbox.mailer.invalid`, create a test key, and inspect the re
 email/events. No domain or real recipient is needed for that simulation. Then add a
 domain you control and publish its ownership TXT/DKIM/MAIL FROM records. Mailer checks
 DNS and the configured domain provider automatically. Once the domain is verified, the
-workspace can create a **Production** key for real messages. Domain provisioning still
-uses SES during this transition. SES delivery also requires production access in the
-configured `AWS_REGION`; SMTP delivery requires an authenticated, production-ready relay.
+workspace can create a **Production** key for real messages. Domain provisioning can use
+SES or the independent Stalwart JMAP management API. SES delivery requires production
+access in the configured `AWS_REGION`; SMTP delivery requires an authenticated,
+production-ready relay. See [Stalwart domain provisioning](STALWART_DOMAIN_PROVISIONING.md).
 
 In the Cloudflare dashboard, configure the supplied tunnel's published application:
 

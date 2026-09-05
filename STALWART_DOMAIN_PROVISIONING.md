@@ -11,9 +11,11 @@ public DNS value and Stalwart object identifiers.
    that network only to reach Stalwart's management listener.
 2. In Stalwart, create a dedicated service account for Mailer and issue an API
    key in **Replace** permission mode. Grant only:
-   `sysDomainGet`, `sysDomainQuery`, `sysDomainCreate`, `sysDomainUpdate`,
+   `authenticate`, `sysDomainGet`, `sysDomainQuery`, `sysDomainCreate`, `sysDomainUpdate`,
    `sysDkimSignatureGet`, `sysDkimSignatureQuery`,
    `sysDkimSignatureCreate`, and `sysDkimSignatureDestroy`.
+   The generated API-key secret is displayed only once. Store that complete
+   value as `STALWART_API_TOKEN` in Mailer's `.env`.
 3. Keep the default DKIM signing policy. It signs authenticated submissions
    when the sender domain is a local enabled domain. Mailer registers the
    bounce subdomain as an alias so the aligned envelope sender is also local.

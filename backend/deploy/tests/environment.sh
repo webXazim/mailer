@@ -4,7 +4,7 @@
 set -eu
 mkdir -p /test/backend /test/bin
 cp -R /source/backend/deploy /test/backend/
-cp /source/manage /source/.env.production.example /test/
+cp /source/manage /source/.env.production.example /source/.env.storage.example /source/docker-compose.storage.yml /test/
 cd /test
 for file in manage backend/deploy/*.sh; do sh -n "$file"; done
 sh manage production-init
@@ -42,6 +42,15 @@ EOF
 chmod +x bin/docker
 export PATH="/test/bin:$PATH"
 sh manage preflight
+sh manage storage-init
+test "$(stat -c '%a' .env.storage)" = 600
+test "$(stat -c '%a' .storage/garage.toml)" = 600
+grep -Eq '^rpc_secret = "[a-f0-9]{64}"$' .storage/garage.toml
+sh manage storage-preflight
+: >docker-calls.log
+sh manage storage-up
+grep -q 'pull garage' docker-calls.log
+grep -q 'up -d --wait --wait-timeout 120 garage' docker-calls.log
 chmod 644 .env
 if sh manage preflight >/dev/null 2>&1; then exit 1; fi
 chmod 600 .env
@@ -115,3 +124,33 @@ fi
 test ! -e /test/unexpected-upload
 test -z "$(find /var/backups/mailer-test -type f -print)"
 echo 'Backup pipeline failure propagation passed.'
+
+# A successful object backup must use a temporary credential file, never expose
+# its secret in command arguments, and copy to the immutable offsite prefix.
+cat >bin/docker <<'EOF'
+#!/bin/sh
+printf 'database dump'
+EOF
+cat >bin/rclone <<'EOF'
+#!/bin/sh
+echo "$*" >>/test/rclone-calls.log
+if [ "${1:-}" = --config ]; then
+    test -f "$2"
+    grep -q '^secret_access_key = object-secret$' "$2"
+    touch /test/object-copy-ran
+fi
+EOF
+chmod +x bin/docker bin/rclone
+: >rclone-calls.log
+BACKUP_DIR=/var/backups/mailer-success BACKUP_AGE_RECIPIENT=test \
+BACKUP_RCLONE_REMOTE=test:backup BACKUP_OBJECT_STORAGE=true \
+OBJECT_STORAGE_ENDPOINT=http://garage:3900 OBJECT_STORAGE_BACKUP_ENDPOINT=http://127.0.0.1:3900 \
+OBJECT_STORAGE_BUCKET=mailer OBJECT_STORAGE_ACCESS_KEY_ID=object-key \
+OBJECT_STORAGE_SECRET_ACCESS_KEY=object-secret OBJECT_STORAGE_REGION=garage \
+bash backend/deploy/backup.sh
+test -e /test/object-copy-ran
+grep -q 'object-storage --immutable' rclone-calls.log
+if grep -q 'object-secret' rclone-calls.log; then
+    echo 'Object-storage secret leaked into rclone arguments' >&2; exit 1
+fi
+echo 'Immutable object backup and credential isolation passed.'

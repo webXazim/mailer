@@ -159,7 +159,7 @@ services:
     tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
     stop_grace_period: 60s
     logging: *app-logging
-    networks: [edge, internal]
+    networks: [edge, internal, mail-transport]
 
   postgres:
     mem_limit: ${POSTGRES_MEMORY_LIMIT:-512m}

@@ -7,7 +7,7 @@ services are intentionally outside this repository.
 
 - [`frontend/`](frontend/README.md): React, Vite, and TypeScript console.
 - [`backend/`](backend/README.md): Rust/Axum API, worker, PostgreSQL, NATS
-  JetStream, selectable SES/SMTP delivery, and R2 integration.
+  JetStream, selectable SES/SMTP delivery, and S3-compatible object storage.
 
 Run all normal development, verification, Docker, and deployment commands from
 this directory through `sh manage`. The `Makefile` provides optional aliases.
@@ -59,7 +59,7 @@ sh manage deploy
 
 `production-init` creates `.env` with four independent random local secrets and
 refuses to overwrite an existing file. Enter the tunnel token, separate API and
-provider credentials, SES/SQS event configuration when SES is selected, and R2 bucket credentials
+provider credentials, SES/SQS event configuration when SES is selected, and object-storage credentials
 at the **top** of the file. The lower section contains runtime defaults. If you
 securely copy an existing `.env`, skip initialization and keep its secrets.
 The ignored local `.env` is never delivered by Git; transfer it securely or enter
@@ -114,7 +114,8 @@ access in the configured `AWS_REGION`; SMTP delivery requires an authenticated,
 production-ready relay. See [Stalwart domain provisioning](STALWART_DOMAIN_PROVISIONING.md)
 and [Stalwart delivery events](STALWART_EVENT_INGESTION.md). Staged provider
 cohorts, pause controls, caps, and rollback are covered in
-[Delivery routing and rollback](DELIVERY_ROUTING.md).
+[Delivery routing and rollback](DELIVERY_ROUTING.md). The independent Garage option
+is covered in [Self-hosted object storage](SELF_HOSTED_STORAGE.md).
 
 In the Cloudflare dashboard, configure the supplied tunnel's published application:
 
@@ -165,7 +166,8 @@ have no public host bindings.
 
 The public API base URL is `https://mailer.crescentsphere.com/api`; for example,
 `POST /api/v1/emails`. `/api/internal/*` and `/internal/*` return 404. Console
-health is `/healthz`; API checks are `/api/healthz` and `/api/readyz`.
+health is `/healthz`; API checks are `/api/healthz`, `/api/readyz`, and
+`/api/operationalz`. The operational endpoint also checks worker and queue progress.
 
 ```bash
 sh manage production-status
@@ -186,7 +188,7 @@ your VPS by this change.
 ### Testing and customer-launch checklist
 
 Use `APP_ENV=production` even for VPS testing so HTTPS cookies and production
-validation stay enabled. This requires real selected-provider and R2 settings; test API keys
+validation stay enabled. This requires real selected-provider and object-storage settings; test API keys
 and test-environment email submissions simulate delivery. They do not exercise
 real SES delivery. See [backend configuration](backend/README.md) for IAM,
 SES event setup and a real delivery test. Cloudflare Tunnel carries HTTP traffic;
@@ -206,7 +208,7 @@ Before customer use:
 - Pin `CLOUDFLARED_IMAGE` to a reviewed version/digest instead of `latest`.
 - Confirm SES production access in `AWS_REGION`, verified domains, IAM permissions and quotas.
 - Configure encrypted offsite backups and rehearse recovery. See the backend
-  recovery instructions; PostgreSQL backups alone do not back up NATS or R2.
+  recovery instructions; enable the object-storage backup and plan NATS recovery.
 - Run `sh manage healthcheck` and a complete real send/event/webhook test.
 
 Reference: [Cloudflare tunnel run parameters](https://developers.cloudflare.com/tunnel/advanced/run-parameters/)
@@ -233,4 +235,5 @@ a development machine. This does not replace a full backend/provider smoke test.
 disposable PostgreSQL/NATS volumes and dummy provider credentials. It checks
 authenticated NATS startup, migrations, readiness and private-route blocking,
 then deletes only its own test stack/data. It never starts cloudflared or the
-sending worker. Real SES/R2 delivery still needs a separate test with your account.
+sending worker. Real provider and object-storage delivery still needs a separate
+test with your infrastructure.

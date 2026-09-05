@@ -26,6 +26,14 @@ if [ -z "$failure" ] && [ "${DELIVERY_PROVIDER:-ses}" = smtp ]; then
     trap - EXIT HUP INT TERM
 fi
 
+if [ -z "$failure" ] && [ "${OBJECT_STORAGE_PROVIDER:-r2}" = s3 ] && [ "${OBJECT_STORAGE_ENDPOINT:-}" = http://garage:3900 ]; then
+    if [ ! -f .env.storage ] || ! docker compose --project-name crescentsphere-storage \
+        --env-file .env.storage -f docker-compose.storage.yml \
+        exec -T garage /garage status >/dev/null 2>&1; then
+        failure='self-hosted object storage is unavailable'
+    fi
+fi
+
 test -n "$failure" || exit 0
 
 message="CrescentSphere Mailer production monitor: $failure"

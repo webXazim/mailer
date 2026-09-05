@@ -15,6 +15,8 @@ docker run --rm --entrypoint sh --tmpfs /test:rw,exec \
     --mount "type=bind,source=$root/backend/deploy,target=/source/backend/deploy,readonly" \
     --mount "type=bind,source=$root/manage,target=/source/manage,readonly" \
     --mount "type=bind,source=$root/.env.production.example,target=/source/.env.production.example,readonly" \
+    --mount "type=bind,source=$root/.env.storage.example,target=/source/.env.storage.example,readonly" \
+    --mount "type=bind,source=$root/docker-compose.storage.yml,target=/source/docker-compose.storage.yml,readonly" \
     rust:1.97-bookworm /source/backend/deploy/tests/environment.sh
 
 docker build --build-arg VITE_API_URL=/api --build-arg NGINX_CONFIG=nginx.production.conf \

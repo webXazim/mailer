@@ -1,0 +1,49 @@
+# Independent object-storage lifecycle. Application deploys must not restart or
+# remove this service. The S3 port is loopback-only for backup and diagnostics.
+name: crescentsphere-storage
+
+services:
+  garage:
+    image: ${GARAGE_IMAGE:-dxflrs/garage:v2.3.0}
+    restart: unless-stopped
+    init: true
+    ports:
+      - target: 3900
+        published: ${GARAGE_S3_PORT:-3900}
+        host_ip: 127.0.0.1
+        protocol: tcp
+    volumes:
+      - ./.storage/garage.toml:/etc/garage.toml:ro
+      - garage-meta:/var/lib/garage/meta
+      - garage-data:/var/lib/garage/data
+    healthcheck:
+      test: ["CMD", "/garage", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    pids_limit: 512
+    stop_grace_period: 120s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    networks:
+      - mail-transport
+
+volumes:
+  garage-meta:
+  garage-data:
+
+networks:
+  mail-transport:
+    name: crescentsphere-mail-transport
+    external: true

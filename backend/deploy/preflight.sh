@@ -87,6 +87,15 @@ done
 test "${APP_ENV:-}" = production || fail 'APP_ENV must be production, including VPS tests.'
 test "${CONSOLE_ORIGIN:-}" = https://mailer.crescentsphere.com || fail 'CONSOLE_ORIGIN must be https://mailer.crescentsphere.com.'
 case "${OBJECT_STORAGE_PROVIDER:-}" in r2|s3) ;; *) fail 'Enable r2 or s3 object storage.' ;; esac
+case "${BACKUP_OBJECT_STORAGE:-false}" in
+    true)
+        test -n "${BACKUP_RCLONE_REMOTE:-}" || fail 'BACKUP_RCLONE_REMOTE is required when BACKUP_OBJECT_STORAGE=true.'
+        test -n "${OBJECT_STORAGE_BACKUP_ENDPOINT:-}" || fail 'OBJECT_STORAGE_BACKUP_ENDPOINT is required when BACKUP_OBJECT_STORAGE=true.'
+        command -v rclone >/dev/null || fail 'Install rclone when BACKUP_OBJECT_STORAGE=true.'
+        ;;
+    false) ;;
+    *) fail 'BACKUP_OBJECT_STORAGE must be true or false.' ;;
+esac
 test "${TRUST_PROXY_HEADERS:-}" = true || fail 'TRUST_PROXY_HEADERS must be true for this private proxy topology.'
 case "${FRONTEND_PORT:-0}" in ''|*[!0-9]*) fail 'FRONTEND_PORT must be 0 (automatic) or a port number.' ;; esac
 test "${FRONTEND_PORT:-0}" -le 65535 || fail 'FRONTEND_PORT is outside the port range.'

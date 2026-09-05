@@ -168,11 +168,12 @@ events enabled for SES-routed messages while those attempts remain in flight.
 When changing an existing deployment, keep all worker SES/event variables set until
 previously accepted SES messages have drained; otherwise clear the complete group.
 
-### Cloudflare R2
+### S3-compatible object storage
 
-Create a private bucket and an R2 API token restricted to Object Read and
-Write for that bucket. Set the endpoint, bucket, access key, and secret in the
-object-storage variables. Production requires object storage: the API writes
+Create a private bucket and credentials restricted to object read and write for
+that bucket. Cloudflare R2 and the independently deployed Garage stack are both
+supported through the same S3-compatible settings. Set the endpoint, region,
+bucket, access key, and secret in the object-storage variables. Production requires object storage: the API writes
 immutable message-content objects before making delivery work visible, and the
 worker verifies each object's SHA-256 checksum before sending. Local
 development can keep `OBJECT_STORAGE_PROVIDER=disabled` and store content in
@@ -181,8 +182,8 @@ PostgreSQL.
 The send API accepts up to 10 base64 attachments, limited to 10 MB each and
 20 MB decoded in total so the encoded MIME message remains within SES limits.
 Attachments, inline content, HTML, and text are stored together in one
-immutable message object. The worker generates multipart MIME and uses SES raw
-content delivery. Terminal message objects are retained for
+immutable message object. The worker generates multipart MIME and passes it to
+the selected provider. Terminal message objects are retained for
 `EMAIL_CONTENT_RETENTION_DAYS`, then deleted only while PostgreSQL still marks
 the email completed.
 
@@ -225,7 +226,7 @@ neither endpoint may be internet-facing.
 Terminate TLS at the reverse proxy, enable HSTS there, and set only
 `X-Real-IP` from that trusted loopback proxy. Never set `TRUST_PROXY_HEADERS=true`
 when the API is directly exposed to the public network. Keep PostgreSQL, NATS,
-and R2 private, rotate credentials independently, and rehearse database and
+and object storage private, rotate credentials independently, and rehearse database and
 JetStream restoration before accepting customer traffic.
 
 ### VPS deployment and recovery
@@ -249,8 +250,10 @@ compatible PostgreSQL client for its host-side `pg_restore --list` check. Keep
 the age private identity offline from routine backup jobs; only restore needs it.
 Never point the rehearsal at the live database or use it as a live rollback.
 
-PostgreSQL backups do not cover NATS JetStream or R2 objects. Establish their
-retention/recovery strategy and rehearse full recovery before accepting customers.
+PostgreSQL backups do not cover NATS JetStream. When `BACKUP_OBJECT_STORAGE=true`,
+the backup job copies immutable object keys to the configured rclone remote; test
+restoring those objects and establish a separate NATS recovery strategy before
+accepting customers.
 Changing the PostgreSQL password in `.env` alone does not change an existing
 volume's database password. Coordinate database credential changes explicitly.
 Changing the webhook master key invalidates existing customer webhook secrets.

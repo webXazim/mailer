@@ -48,6 +48,14 @@ Commands:
   stalwart-restart    Restart only the independent Stalwart service
   stalwart-logs       Follow Stalwart logs
   stalwart-status     Show Stalwart service status and admin port
+  storage-init        Create private Garage configuration and secrets
+  storage-preflight   Validate the independent Garage configuration
+  storage-up          Pull and start the independent Garage object store
+  storage-bootstrap   Create the initial layout, bucket, and application key
+  storage-down        Stop Garage while preserving its named volumes
+  storage-restart     Restart only the independent Garage service
+  storage-logs        Follow Garage logs
+  storage-status      Show Garage health and its loopback S3 port
 EOF
 }
 
@@ -68,6 +76,11 @@ production_compose() {
 stalwart_compose() {
     test -f .env.stalwart || { echo ".env.stalwart is required; run: sh manage stalwart-init" >&2; exit 1; }
     docker compose --project-name crescentsphere-stalwart --env-file .env.stalwart -f docker-compose.stalwart.yml "$@"
+}
+
+storage_compose() {
+    test -f .env.storage || { echo ".env.storage is required; run: sh manage storage-init" >&2; exit 1; }
+    docker compose --project-name crescentsphere-storage --env-file .env.storage -f docker-compose.storage.yml "$@"
 }
 
 command=${1:-help}
@@ -251,6 +264,24 @@ SQL
         stalwart_compose ps
         printf '\nLoopback admin address: '
         stalwart_compose port stalwart 8080
+        ;;
+    storage-init) sh backend/deploy/storage-init.sh ;;
+    storage-preflight) sh backend/deploy/storage-preflight.sh ;;
+    storage-up)
+        sh backend/deploy/storage-preflight.sh
+        storage_compose pull garage
+        storage_compose up -d --wait --wait-timeout 120 garage
+        storage_compose ps
+        ;;
+    storage-bootstrap) sh backend/deploy/storage-bootstrap.sh ;;
+    storage-down) storage_compose down ;;
+    storage-restart) storage_compose restart garage ;;
+    storage-logs) storage_compose logs --follow --tail 100 garage ;;
+    storage-status)
+        storage_compose ps
+        storage_compose exec -T garage /garage status
+        printf '\nLoopback S3 address: '
+        storage_compose port garage 3900
         ;;
     *) echo "Unknown command: $command" >&2; usage >&2; exit 2 ;;
 esac

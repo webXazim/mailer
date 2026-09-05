@@ -57,5 +57,7 @@ Current automated evidence is: 30 Rust tests, strict workspace Clippy, environme
 and reverse-proxy regression, and a clean PostgreSQL/NATS/API production smoke test
 covering migrations, routing controls, caps, worker-staleness detection, atomic local
 failures, signed Stalwart events, multi-recipient convergence, replay safety, and
-private-route isolation. This supports a controlled production pilot; it is not a
+private-route isolation. A real local Garage v2.3 node also passed layout/bootstrap,
+least-privilege key, read-only-container restart, S3 put/get/content-check/delete,
+credential-preservation, and duplicate-bootstrap refusal tests. This supports a controlled production pilot; it is not a
 claim of live deliverability certification.

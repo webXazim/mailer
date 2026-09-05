@@ -4,6 +4,7 @@
 !.env.example
 !.env.*.example
 .envrc
+.storage/
 *.pem
 *.key
 *.p12

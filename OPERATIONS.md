@@ -11,7 +11,7 @@ minute and alerts when the public API is unavailable, the worker heartbeat is
 stale, queued mail or customer webhooks stop progressing, retained-content cleanup
 falls behind, local disk usage reaches `DISK_ALERT_PERCENT` (85 by default), or the
 SMTP TLS certificate is invalid or expires within `TLS_ALERT_SECONDS` (seven days
-by default).
+by default), or the configured self-hosted Garage node is unavailable.
 
 The API endpoints have distinct meanings:
 
@@ -58,9 +58,10 @@ manually; do not replay it automatically.
 ## Recovery
 
 The backup timer creates an encrypted PostgreSQL dump every six hours and copies it
-to the configured immutable remote. Run `sh manage restore-rehearsal` regularly and
-record the result. PostgreSQL contains the authoritative application state; also
-back up the Stalwart data/config volumes and the object-store bucket independently.
+to the configured immutable remote. With `BACKUP_OBJECT_STORAGE=true`, it also copies
+immutable message objects through the S3 API using a temporary mode-600 rclone config.
+Run `sh manage restore-rehearsal` regularly and record the result. PostgreSQL contains
+the authoritative application state; also back up the Stalwart data/config volumes.
 
 After a restore, keep sending paused. Verify database migrations, NATS access,
 object retrieval and checksums, Stalwart configuration, DNS, TLS, and webhook

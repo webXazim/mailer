@@ -45,7 +45,11 @@ services:
         max-size: "20m"
         max-file: "5"
     networks:
-      - mail-transport
+      mail-transport:
+        aliases:
+          # The SMTP client validates TLS against this public certificate name.
+          # Resolve it directly to Stalwart on the private Docker network.
+          - smtp.crescentsphere.com
 
 volumes:
   stalwart-etc:

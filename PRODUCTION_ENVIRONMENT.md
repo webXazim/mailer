@@ -20,7 +20,7 @@ available. Use these non-secret routing values for Stalwart as the default:
 ```dotenv
 DELIVERY_PROVIDER=smtp
 DOMAIN_PROVIDER=stalwart
-SMTP_HOST=stalwart
+SMTP_HOST=smtp.crescentsphere.com
 SMTP_PORT=465
 SMTP_SECURITY=implicit_tls
 SMTP_HELO_NAME=smtp.crescentsphere.com
@@ -37,6 +37,10 @@ token. Generate separate `STALWART_WEBHOOK_TOKEN` and
 `STALWART_WEBHOOK_SIGNING_KEY` values and configure the same values in Stalwart's
 delivery webhook. Do not use the recovery administrator credential for the API or
 SMTP submission.
+
+`SMTP_HOST` uses the public certificate name for TLS verification. The Stalwart
+Compose stack assigns that name as an alias on the private mail network, so API
+and worker containers connect directly to Stalwart without public hairpin routing.
 
 Retain the `WORKER_AWS_*`, `SES_CONFIGURATION_SET`, `SES_EVENTS_QUEUE_URL`, and
 `SES_EVENTS_TOPIC_ARN` values until SES rollback is deliberately retired.

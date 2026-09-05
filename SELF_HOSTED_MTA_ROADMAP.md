@@ -208,9 +208,10 @@ at least two weeks, and rollback is rehearsed without duplicates.
 and rate limits, suppressions, worker heartbeat and queue/backlog health, final
 domain authorization, atomic local-failure webhooks, disk/TLS monitoring, bounded
 storage operations, higher-throughput retention cleanup, staged routing controls,
-encrypted PostgreSQL/object backup, and the incident runbook are implemented. The
-compromised-key drill, relay/security review, full restore drill, automated anomaly
-pause, and live alert delivery remain production gates.
+encrypted PostgreSQL/object backup, automatic production-key rate containment,
+workspace pause/resume controls, and the incident runbook are implemented. The
+compromised-key live drill, relay/security review, full restore drill, broader
+recipient/outcome anomaly detection, and live alert delivery remain production gates.
 
 - Enforce verified domains, per-workspace quotas, recipient/concurrency limits and
   rate limits at both API and MTA layers.

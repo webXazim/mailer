@@ -29,6 +29,9 @@ Commands:
   production-status   Show production services and assigned localhost port
   pending-workspaces  List workspaces without production access
   approve-workspace   Manually enable production for a workspace UUID
+  pause-workspace ID  Pause production admission and provider attempts
+  resume-workspace ID Resume production after investigation and key rotation
+  security-events [DAYS] Show containment and operator security events
   account-email-status Show auth-email and downstream SES status for an address
   delivery-routing-status Show provider controls, cohorts, and today's volume
   smtp-pause          Stop new SMTP attempts; safely defer or roll back queued mail
@@ -147,6 +150,24 @@ case "$command" in
         workspace_id=${1:-}
         printf '%s\n' "$workspace_id" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' || { echo 'Usage: sh manage approve-workspace WORKSPACE_UUID' >&2; exit 2; }
         production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --variable=ON_ERROR_STOP=1 --command "UPDATE workspaces SET production_enabled=true,updated_at=now() WHERE id='$workspace_id'::uuid;"
+        ;;
+    pause-workspace)
+        shift
+        workspace_id=${1:-}
+        printf '%s\n' "$workspace_id" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' || { echo 'Usage: sh manage pause-workspace WORKSPACE_UUID' >&2; exit 2; }
+        production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --variable=ON_ERROR_STOP=1 --command "BEGIN; UPDATE workspaces SET sending_paused_at=COALESCE(sending_paused_at,now()),sending_pause_reason=COALESCE(sending_pause_reason,'manual_operator_pause'),sending_paused_by=COALESCE(sending_paused_by,'operator'),updated_at=now() WHERE id='$workspace_id'::uuid; INSERT INTO audit_events(workspace_id,action,resource_type,resource_id,metadata) SELECT id,'security.workspace_paused','workspace',id,jsonb_build_object('source','operator') FROM workspaces WHERE id='$workspace_id'::uuid; COMMIT;"
+        ;;
+    resume-workspace)
+        shift
+        workspace_id=${1:-}
+        printf '%s\n' "$workspace_id" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' || { echo 'Usage: sh manage resume-workspace WORKSPACE_UUID' >&2; exit 2; }
+        production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --variable=ON_ERROR_STOP=1 --command "BEGIN; UPDATE workspaces SET sending_paused_at=NULL,sending_pause_reason=NULL,sending_paused_by=NULL,updated_at=now() WHERE id='$workspace_id'::uuid; INSERT INTO audit_events(workspace_id,action,resource_type,resource_id,metadata) SELECT id,'security.workspace_resumed','workspace',id,jsonb_build_object('source','operator') FROM workspaces WHERE id='$workspace_id'::uuid; INSERT INTO outbox_events(aggregate_type,aggregate_id,event_type,payload) SELECT 'email',email.id,'email.accepted',jsonb_build_object('emailId',email.id,'workspaceId',email.workspace_id) FROM emails email WHERE email.workspace_id='$workspace_id'::uuid AND email.environment='production' AND email.status='queued' AND NOT EXISTS(SELECT 1 FROM delivery_provider_attempts attempt WHERE attempt.email_id=email.id); COMMIT;"
+        ;;
+    security-events)
+        shift
+        days=${1:-7}
+        printf '%s\n' "$days" | grep -Eq '^[1-9][0-9]*$' || { echo 'Usage: sh manage security-events [POSITIVE_DAYS]' >&2; exit 2; }
+        production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --variable=ON_ERROR_STOP=1 --command "SELECT event.created_at,event.workspace_id,workspace.name,event.action,event.resource_type,event.resource_id,event.metadata FROM audit_events event LEFT JOIN workspaces workspace ON workspace.id=event.workspace_id WHERE event.action LIKE 'security.%' AND event.created_at>=now()-make_interval(days=>$days) ORDER BY event.created_at DESC;"
         ;;
     account-email-status)
         shift

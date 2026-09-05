@@ -1,6 +1,7 @@
 # Current production readiness
 
-Rechecked 2026-09-04 after the operational-safety and staged-delivery upgrades.
+Rechecked 2026-09-05 after the operational-safety, staged-delivery, storage, and
+abuse-containment upgrades.
 `READINESS_AUDIT.md` remains the historical pre-fix review.
 
 The previously confirmed code gaps are closed and covered by a clean-database
@@ -16,6 +17,11 @@ production smoke test:
   deadlines.
 - Retained-content cleanup drains bounded batches of up to 5,000 objects per hour,
   backs off failed objects for one hour, and exposes excessive backlog in health.
+- Exceeding a production API key's per-minute limit atomically revokes that key,
+  pauses its workspace, and records a security audit event. API admission and the
+  worker's final provider boundary both honor the pause. Test simulation remains
+  available for diagnosis, and `/operationalz` alerts until an operator resumes
+  the workspace.
 
 Provider routing is guarded by a global SMTP pause, a daily admission cap,
 per-workspace cohorts, and pre-attempt-only SES rollback. `OPERATIONS.md` documents
@@ -48,12 +54,12 @@ they cannot be established by repository tests:
 ## Product and policy work before broad promotion
 
 MFA, team administration, billing, templates, custom headers, tags, legal policy
-pages, account deletion/export, ownership-dispute handling, and automated anomaly
-response remain outside the current mail-delivery core. Until automated anomaly
-response is implemented, operators must review delivery reports and revoke keys,
-disable domains, and pause SMTP using the documented incident procedure.
+pages, account deletion/export, ownership-dispute handling, and broader anomaly
+detection based on recipient, bounce, and complaint patterns remain outside the
+current mail-delivery core. Rate-limit containment is automatic; operators must
+still review delivery and security reports for other abuse patterns.
 
-Current automated evidence is: 30 Rust tests, strict workspace Clippy, environment
+Current automated evidence includes Rust tests, strict workspace Clippy, environment
 and reverse-proxy regression, and a clean PostgreSQL/NATS/API production smoke test
 covering migrations, routing controls, caps, worker-staleness detection, atomic local
 failures, signed Stalwart events, multi-recipient convergence, replay safety, and

@@ -4,7 +4,6 @@ export interface ApiPage<T> { data: T[]; pagination: { hasMore: boolean; nextCur
 
 export interface SessionUser { id: string; email: string; name: string; role: 'owner' | 'admin' | 'developer' | 'analyst' }
 
-export interface WorkspaceContext { id: string; name: string; slug: string; plan: string; usage: { sent: number; limit: number } }
+export interface WorkspaceContext { id: string; name: string; slug: string; plan: string; production_enabled?: boolean; sending_paused?: boolean; sending_pause_reason?: string | null; usage: { sent: number; limit: number } }
 
 export interface ApiContext { user: SessionUser; workspace: WorkspaceContext }
-

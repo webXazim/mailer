@@ -62,6 +62,7 @@ enum ProviderControl {
 enum AttemptPreparation {
     Ready,
     Deferred,
+    WorkspacePaused,
     DomainUnauthorized,
 }
 
@@ -330,6 +331,11 @@ async fn process(
                 "SMTP delivery is paused; no provider attempt was started".into(),
             ))
         }
+        AttemptPreparation::WorkspacePaused => {
+            return Ok(Outcome::Deferred(
+                "Workspace production sending is paused; no provider attempt was started".into(),
+            ))
+        }
         AttemptPreparation::DomainUnauthorized => {
             return Ok(Outcome::Failed(
                 "Sender domain was disabled or lost verification before delivery".into(),
@@ -440,6 +446,15 @@ async fn prepare_provider_attempt(
     };
     if !domain_authorized {
         return Ok(AttemptPreparation::DomainUnauthorized);
+    }
+    let workspace_ready = sqlx::query_scalar::<_, bool>(
+        "SELECT sending_paused_at IS NULL FROM workspaces WHERE id=$1 FOR SHARE",
+    )
+    .bind(workspace_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !workspace_ready {
+        return Ok(AttemptPreparation::WorkspacePaused);
     }
     if email.delivery_provider == "smtp" {
         let controls = sqlx::query(

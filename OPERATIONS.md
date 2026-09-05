@@ -7,7 +7,8 @@ Use it after both Compose projects have been configured according to
 ## Routine monitoring
 
 Install and enable the health timer from `backend/deploy/systemd`. It runs every
-minute and alerts when the public API is unavailable, the worker heartbeat is
+minute and alerts when the public API is unavailable, an automatic workspace
+containment requires review, the worker heartbeat is
 stale, queued mail or customer webhooks stop progressing, retained-content cleanup
 falls behind, local disk usage reaches `DISK_ALERT_PERCENT` (85 by default), or the
 SMTP TLS certificate is invalid or expires within `TLS_ALERT_SECONDS` (seven days
@@ -17,12 +18,14 @@ The API endpoints have distinct meanings:
 
 - `/healthz` proves that the API process is running.
 - `/readyz` proves that PostgreSQL and NATS are reachable.
-- `/operationalz` proves recent worker progress and checks delivery, webhook, and
-  content-cleanup backlogs. A 503 is actionable even when `/readyz` is green.
+- `/operationalz` proves recent worker progress and checks automatic security
+  containment plus delivery, webhook, and content-cleanup backlogs. A 503 is
+  actionable even when `/readyz` is green.
 
 Run `sh manage delivery-report 7` during daily review. Investigate a sudden rise in
 rejects, bounces, complaints, retries, or one sender domain dominating traffic.
 Review `sh manage delivery-routing-status` before and after every routing change.
+Review `sh manage security-events 7` for automatic containment and operator actions.
 
 ## Safe transport rollout and rollback
 
@@ -41,15 +44,19 @@ final authorization boundary; an already running provider request cannot be reca
 
 For suspected abuse or a compromised API key:
 
-1. Revoke the key in the console and pause SMTP with `sh manage smtp-pause`.
+1. Run `sh manage pause-workspace WORKSPACE_UUID` for the affected workspace and
+   revoke or rotate the key. The API automatically revokes a production key and
+   pauses its workspace when that key exceeds its configured per-minute limit.
 2. Identify the workspace, sender domain, recipients, provider attempts, and event
    times using `sh manage delivery-report 1` and the API-key audit trail.
 3. Disable affected domains and suppress known bad or complaining recipients.
 4. Preserve database, application, Stalwart, and reverse-proxy logs before cleanup.
 5. Rotate API, webhook, Stalwart admin, database, and NATS credentials if exposure
    is possible. Restart only the services that consume a rotated secret.
-6. Resume a single controlled workspace under the daily cap. Confirm delivery and
-   complaint handling before widening traffic.
+6. After rotating the affected key, run `sh manage resume-workspace WORKSPACE_UUID`.
+   This requeues mail deferred before a provider attempt. Confirm delivery and
+   complaint handling before widening traffic. Never resume a workspace while the
+   offending credential remains usable.
 
 For a worker outage, keep SMTP paused, restore worker heartbeats, and inspect stale
 provider attempts. Treat an attempt left in `processing` as ambiguous and review it

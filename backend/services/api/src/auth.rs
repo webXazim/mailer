@@ -86,6 +86,8 @@ pub(crate) struct WorkspaceContext {
     pub(crate) slug: String,
     pub(crate) plan: String,
     pub(crate) production_enabled: bool,
+    pub(crate) sending_paused: bool,
+    pub(crate) sending_pause_reason: Option<String>,
     pub(crate) usage: Usage,
 }
 
@@ -922,13 +924,15 @@ async fn auth_config(State(state): State<AppState>) -> Json<serde_json::Value> {
 }
 
 async fn workspace_context(state: &AppState, id: Uuid) -> Result<WorkspaceContext, sqlx::Error> {
-    let row = sqlx::query("SELECT w.name,w.slug,w.production_enabled,COALESCE(u.emails_accepted,0)::bigint AS sent,l.monthly_email_limit FROM workspaces w LEFT JOIN usage_counters u ON u.workspace_id=w.id AND u.period_start=date_trunc('month',now())::date LEFT JOIN workspace_limits l ON l.workspace_id=w.id WHERE w.id=$1").bind(id).fetch_one(&state.db).await?;
+    let row = sqlx::query("SELECT w.name,w.slug,w.production_enabled,w.sending_paused_at IS NOT NULL AS sending_paused,w.sending_pause_reason,COALESCE(u.emails_accepted,0)::bigint AS sent,l.monthly_email_limit FROM workspaces w LEFT JOIN usage_counters u ON u.workspace_id=w.id AND u.period_start=date_trunc('month',now())::date LEFT JOIN workspace_limits l ON l.workspace_id=w.id WHERE w.id=$1").bind(id).fetch_one(&state.db).await?;
     Ok(WorkspaceContext {
         id,
         name: row.get("name"),
         slug: row.get("slug"),
         plan: "private".into(),
         production_enabled: row.get("production_enabled"),
+        sending_paused: row.get("sending_paused"),
+        sending_pause_reason: row.get("sending_pause_reason"),
         usage: Usage {
             sent: row.get("sent"),
             limit: row

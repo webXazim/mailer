@@ -92,12 +92,25 @@ async fn send_email(
             "The API key and request environment must match",
         );
     }
-    if environment == "production" && !api_keys::production_enabled(&state, workspace_id).await {
-        return error(
-            StatusCode::FORBIDDEN,
-            "production_access_required",
-            "Production sending requires a verified sending domain",
-        );
+    if environment == "production" {
+        match production_send_state(&state, workspace_id).await {
+            Ok(ProductionSendState::Ready) => {}
+            Ok(ProductionSendState::NotEnabled) => {
+                return error(
+                    StatusCode::FORBIDDEN,
+                    "production_access_required",
+                    "Production sending requires a verified sending domain",
+                )
+            }
+            Ok(ProductionSendState::Paused) => return workspace_paused(),
+            Err(_) => {
+                return error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "database_unavailable",
+                    "Unable to confirm workspace sending state",
+                )
+            }
+        }
     }
     let Some(idempotency_key) = headers
         .get("idempotency-key")
@@ -283,6 +296,48 @@ async fn send_email(
         Ok(value) => value,
         Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to enforce request limit"),
     };
+        if should_contain_rate(&environment, i64::from(rate), key_rate_limit) {
+            let revoked = sqlx::query("UPDATE api_keys SET revoked_at=COALESCE(revoked_at,now()) WHERE id=$1 AND revoked_at IS NULL")
+                .bind(api_key_id)
+                .execute(&mut *tx)
+                .await;
+            let paused = sqlx::query("UPDATE workspaces SET sending_paused_at=now(),sending_pause_reason='api_key_rate_limit_exceeded',sending_paused_by='automatic',updated_at=now() WHERE id=$1 AND sending_paused_at IS NULL")
+                .bind(workspace_id)
+                .execute(&mut *tx)
+                .await;
+            let (Ok(revoked), Ok(paused)) = (revoked, paused) else {
+                return error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal_error",
+                    "Unable to contain excessive sending",
+                );
+            };
+            if (revoked.rows_affected() > 0 || paused.rows_affected() > 0)
+                && sqlx::query("INSERT INTO audit_events(workspace_id,action,resource_type,resource_id,metadata) VALUES($1,'security.api_key_rate_containment','api_key',$2,jsonb_build_object('rate',$3,'limit',$4,'environment',$5))")
+                    .bind(workspace_id)
+                    .bind(api_key_id)
+                    .bind(rate)
+                    .bind(key_rate_limit)
+                    .bind(&environment)
+                    .execute(&mut *tx)
+                    .await
+                    .is_err()
+            {
+                return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to audit excessive sending");
+            }
+            if tx.commit().await.is_err() {
+                return error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal_error",
+                    "Unable to contain excessive sending",
+                );
+            }
+            return error(
+                StatusCode::LOCKED,
+                "workspace_sending_paused",
+                "Production sending was paused and the API key was revoked after its request rate limit was exceeded",
+            );
+        }
         if i64::from(rate) > key_rate_limit {
             return error(
                 StatusCode::TOO_MANY_REQUESTS,
@@ -302,6 +357,24 @@ async fn send_email(
             "internal_error",
             "Unable to reserve idempotency key",
         );
+    }
+    match sqlx::query_scalar::<_, bool>(
+        "SELECT sending_paused_at IS NULL FROM workspaces WHERE id=$1 FOR SHARE",
+    )
+    .bind(workspace_id)
+    .fetch_one(&mut *tx)
+    .await
+    {
+        Ok(true) => {}
+        Ok(false) if environment == "production" => return workspace_paused(),
+        Ok(false) => {}
+        Err(_) => {
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "Unable to confirm workspace sending state",
+            )
+        }
     }
     match sqlx::query("SELECT request_hash, response FROM idempotency_keys WHERE workspace_id = $1 AND key = $2 AND environment = $3 FOR UPDATE").bind(workspace_id).bind(idempotency_key).bind(&environment).fetch_optional(&mut *tx).await {
         Ok(Some(row)) => {
@@ -444,6 +517,41 @@ async fn send_email(
         );
     }
     (StatusCode::ACCEPTED, Json(response)).into_response()
+}
+
+enum ProductionSendState {
+    Ready,
+    NotEnabled,
+    Paused,
+}
+
+async fn production_send_state(
+    state: &AppState,
+    workspace_id: Uuid,
+) -> Result<ProductionSendState, sqlx::Error> {
+    let row = sqlx::query("SELECT production_enabled,sending_paused_at IS NOT NULL AS paused FROM workspaces WHERE id=$1")
+        .bind(workspace_id)
+        .fetch_one(&state.db)
+        .await?;
+    Ok(if !row.get::<bool, _>("production_enabled") {
+        ProductionSendState::NotEnabled
+    } else if row.get::<bool, _>("paused") {
+        ProductionSendState::Paused
+    } else {
+        ProductionSendState::Ready
+    })
+}
+
+fn workspace_paused() -> Response {
+    error(
+        StatusCode::LOCKED,
+        "workspace_sending_paused",
+        "Production sending is paused for this workspace; rotate any affected key and ask an operator to resume it",
+    )
+}
+
+fn should_contain_rate(environment: &str, rate: i64, limit: i64) -> bool {
+    environment == "production" && rate > limit
 }
 
 async fn resolve_delivery_provider(
@@ -695,7 +803,7 @@ fn error(status: StatusCode, code: &str, message: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::{
-        choose_delivery_provider, mailbox_address, sender_domain, valid_email,
+        choose_delivery_provider, mailbox_address, sender_domain, should_contain_rate, valid_email,
         validate_attachments, AttachmentInput,
     };
 
@@ -760,5 +868,12 @@ mod tests {
             choose_delivery_provider("smtp", false, true, false, true, true),
             Ok("smtp")
         );
+    }
+
+    #[test]
+    fn excessive_production_key_rate_triggers_containment() {
+        assert!(!should_contain_rate("production", 60, 60));
+        assert!(should_contain_rate("production", 61, 60));
+        assert!(!should_contain_rate("test", 61, 60));
     }
 }

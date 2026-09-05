@@ -264,12 +264,18 @@ async fn operationalz(State(state): State<AppState>) -> impl IntoResponse {
     )
     .bind(i32::try_from(state.email_content_retention_days).unwrap_or(30))
     .fetch_one(&state.db);
-    let (worker, queue, webhooks, cleanup) = tokio::join!(worker, queue, webhooks, cleanup);
+    let security = sqlx::query_scalar::<_, bool>(
+        "SELECT NOT EXISTS(SELECT 1 FROM workspaces WHERE sending_paused_at IS NOT NULL AND sending_paused_by='automatic')",
+    )
+    .fetch_one(&state.db);
+    let (worker, queue, webhooks, cleanup, security) =
+        tokio::join!(worker, queue, webhooks, cleanup, security);
     let worker = worker.unwrap_or(false);
     let queue = queue.unwrap_or(false);
     let webhooks = webhooks.unwrap_or(false);
     let cleanup = cleanup.unwrap_or(false);
-    let status = if worker && queue && webhooks && cleanup {
+    let security = security.unwrap_or(false);
+    let status = if worker && queue && webhooks && cleanup && security {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
@@ -278,7 +284,7 @@ async fn operationalz(State(state): State<AppState>) -> impl IntoResponse {
         status,
         Json(json!({
             "status": if status == StatusCode::OK { "operational" } else { "degraded" },
-            "checks": { "worker": worker, "deliveryQueue": queue, "customerWebhooks": webhooks, "contentCleanup": cleanup }
+            "checks": { "worker": worker, "deliveryQueue": queue, "customerWebhooks": webhooks, "contentCleanup": cleanup, "securityContainment": security }
         })),
     )
 }

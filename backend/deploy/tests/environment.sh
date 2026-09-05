@@ -98,9 +98,15 @@ sh manage route-workspace 11111111-1111-4111-8111-111111111111 smtp
 sh manage route-workspace 11111111-1111-4111-8111-111111111111 default
 sh manage delivery-routing-status
 sh manage delivery-report 7
+sh manage pause-workspace 11111111-1111-4111-8111-111111111111
+sh manage resume-workspace 11111111-1111-4111-8111-111111111111
+sh manage security-events 7
 if sh manage smtp-cap invalid >/dev/null 2>&1; then exit 1; fi
+if sh manage pause-workspace invalid >/dev/null 2>&1; then exit 1; fi
 grep -q 'delivery_operator_controls' docker-calls.log
 grep -q 'workspace_delivery_routes' docker-calls.log
+grep -q 'security.workspace_paused' docker-calls.log
+grep -q 'security.workspace_resumed' docker-calls.log
 echo 'Environment initialization, validation and deployment sequencing passed.'
 
 # A failed database dump must not become an apparently valid encrypted backup.

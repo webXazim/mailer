@@ -20,6 +20,7 @@ Commands:
   check               Verify frontend and backend
   compose-config      Validate local Compose configuration
   production-init     Create .env with generated local secrets (never overwrite)
+  production-env-upgrade Add missing variables without changing existing values
   deploy              Validate, build on the VPS, and start production services
   preflight           Validate production configuration
   production-pull     Pull infrastructure images (not the locally built app)
@@ -106,6 +107,7 @@ case "$command" in
         ;;
     compose-config) docker compose config --quiet ;;
     production-init) sh backend/deploy/init-env.sh ;;
+    production-env-upgrade) sh backend/deploy/upgrade-env.sh ;;
     preflight) sh backend/deploy/preflight.sh ;;
     production-pull)
         production_compose pull postgres nats cloudflared

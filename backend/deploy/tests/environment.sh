@@ -14,6 +14,10 @@ if sh manage production-init >/dev/null 2>&1; then
     echo 'Initialization overwrote .env' >&2; exit 1
 fi
 test "$before" = "$(sha256sum .env)"
+sed -i '/^DELIVERY_PROVIDER=/d' .env
+sh manage production-env-upgrade
+test "$(grep -c '^DELIVERY_PROVIDER=ses$' .env)" = 1
+test "$(stat -c '%a' .env)" = 600
 set -a
 . ./.env
 set +a

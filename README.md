@@ -66,6 +66,12 @@ The ignored local `.env` is never delivered by Git; transfer it securely or ente
 the credentials on the VPS. Never paste it into logs or tickets. Use shell-compatible
 assignments; single-quote values containing `$`, spaces or `#`.
 
+Before deploying an existing installation after an upgrade, run
+`sh manage production-env-upgrade`. It adds missing variables from the current
+example without changing existing values. Complete the new secrets and provider
+settings using [Production environment setup](PRODUCTION_ENVIRONMENT.md), then run
+the normal preflight and deployment commands.
+
 Additional values at the top of `.env`:
 
 - `SES_CONFIGURATION_SET`: the exact SES configuration-set name whose event destination

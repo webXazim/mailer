@@ -13,6 +13,9 @@ the default for workspaces without an explicit route. Configure both provider
 credential sets while operating a mixed cohort. Daily counters use the PostgreSQL
 server date, which should remain UTC in production.
 
+Run `sh manage production-env-upgrade` on installations whose `.env` predates
+provider routing, then complete the values described in `PRODUCTION_ENVIRONMENT.md`.
+
 Inspect the controls before routing traffic:
 
 ```sh

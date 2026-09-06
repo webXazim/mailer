@@ -723,7 +723,7 @@ async fn request_reset(
                 }
             };
             let link = format!(
-                "{}/#/reset-password?token={}",
+                "{}/reset-password?token={}",
                 state.console_origin.trim_end_matches('/'),
                 token
             );

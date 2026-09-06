@@ -457,7 +457,7 @@ fn callback_url(state: &AppState) -> String {
 
 fn redirect_result(state: &AppState, result: &str) -> Response {
     let target = format!(
-        "{}/#/domains?dns={result}",
+        "{}/domains?dns={result}",
         state.console_origin.trim_end_matches('/')
     );
     Redirect::to(&target).into_response()

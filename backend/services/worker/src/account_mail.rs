@@ -57,6 +57,7 @@ pub async fn run(
         let Some(from) = from.as_deref() else {
             continue;
         };
+        let normalized_from = normalize_sender(from);
         let row=sqlx::query("UPDATE account_emails SET status='processing',attempts=attempts+1,updated_at=now() WHERE id=(SELECT id FROM account_emails WHERE status='queued' AND available_at<=now() AND expires_at>now() ORDER BY available_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,recipient,subject,body,html_body,attempts")
             .fetch_optional(&pool).await?;
         let Some(row) = row else { continue };
@@ -74,7 +75,7 @@ pub async fn run(
                 key,
                 AccountMessage {
                     id,
-                    from,
+                    from: &normalized_from,
                     recipient: &recipient,
                     subject: &subject,
                     text: &body,
@@ -103,6 +104,53 @@ pub async fn run(
         }
     }
     Ok(())
+}
+
+fn normalize_sender(value: &str) -> String {
+    let value = value.trim();
+    let Some(address_start) = value.rfind('<') else {
+        return value.to_owned();
+    };
+    if !value.ends_with('>') {
+        return value.to_owned();
+    }
+    let display_name = value[..address_start].trim();
+    let address = &value[address_start + 1..value.len() - 1];
+    let display_name = display_name
+        .strip_prefix('<')
+        .and_then(|name| name.strip_suffix('>'))
+        .unwrap_or(display_name)
+        .trim();
+    if display_name.is_empty() {
+        address.to_owned()
+    } else {
+        format!("{display_name} <{address}>")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_sender;
+
+    #[test]
+    fn removes_accidental_brackets_around_display_name() {
+        assert_eq!(
+            normalize_sender("<CrescentSphere Mailer> <no-reply@mailer.crescentsphere.com>"),
+            "CrescentSphere Mailer <no-reply@mailer.crescentsphere.com>"
+        );
+    }
+
+    #[test]
+    fn preserves_valid_sender_forms() {
+        assert_eq!(
+            normalize_sender("CrescentSphere Mailer <no-reply@mailer.crescentsphere.com>"),
+            "CrescentSphere Mailer <no-reply@mailer.crescentsphere.com>"
+        );
+        assert_eq!(
+            normalize_sender("no-reply@mailer.crescentsphere.com"),
+            "no-reply@mailer.crescentsphere.com"
+        );
+    }
 }
 
 async fn send_via_mailer<C>(

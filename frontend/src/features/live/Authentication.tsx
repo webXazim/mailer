@@ -41,17 +41,17 @@ export function Authentication({ signedIn }: { signedIn: (session: Session) => v
     await action.run(async () => {
       if (mode === 'forgot') { await api.post('/v1/auth/password-reset/request', { email: value('email') }); setNotice('Request accepted. If this account exists, reset instructions were queued. Delivery is not yet confirmed.'); return }
       if (mode === 'resend') { const email = value('email').trim().toLowerCase(); await api.post('/v1/auth/email-verification/resend', { email }); navigate(`/verify-email?email=${encodeURIComponent(email)}&queued=1`, { replace: true }); return }
-      if (mode === 'verify') { const response = await api.post<Envelope<Session>>('/v1/auth/email-verification/complete', { email: value('email'), code: value('code') }); signedIn(response.data); navigate('/', { replace: true }); return }
+      if (mode === 'verify') { const response = await api.post<Envelope<Session>>('/v1/auth/email-verification/complete', { email: value('email'), code: value('code') }); signedIn(response.data); navigate('/overview', { replace: true }); return }
       if (mode === 'reset') { await api.post('/v1/auth/password-reset/complete', { token: new URLSearchParams(location.search).get('token') ?? '', password: value('password') }); window.dispatchEvent(new Event('mailer:session-expired')); setNotice('Password updated. You can now sign in.'); return }
       if (mode === 'signup') {
         if (config.result?.data.turnstileSiteKey && !turnstileToken) throw new Error('Complete the security check first.')
         const response = await api.post<Envelope<SignupResult>>('/v1/auth/signup', { email: value('email'), password: value('password'), first_name: value('first'), last_name: value('last'), turnstile_token: turnstileToken })
-        if (response.data.session) { signedIn(response.data.session); navigate('/', { replace: true }); return }
+        if (response.data.session) { signedIn(response.data.session); navigate('/overview', { replace: true }); return }
         navigate(`/verify-email?email=${encodeURIComponent(response.data.email)}&queued=1`, { replace: true }); return
       }
       const email = value('email').trim().toLowerCase()
       try {
-        const response = await api.post<Envelope<Session>>('/v1/auth/login', { email, password: value('password'), remember: true }); signedIn(response.data); navigate('/', { replace: true })
+        const response = await api.post<Envelope<Session>>('/v1/auth/login', { email, password: value('password'), remember: true }); signedIn(response.data); navigate('/overview', { replace: true })
       } catch (error) {
         if (error instanceof ApiError && error.body.code === 'email_not_verified') { navigate(`/verify-email?email=${encodeURIComponent(email)}`, { replace: true }); return }
         throw error

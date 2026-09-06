@@ -1,6 +1,6 @@
 import { ArrowRight, Check, Code2, Globe2, MailCheck, Route, ShieldCheck, Webhook } from 'lucide-react'
 
-export function LandingPage({ signIn, createAccount }: { signIn: () => void; createAccount: () => void }) {
+export function LandingPage({ signedIn, signIn, createAccount }: { signedIn: boolean; signIn: () => void; createAccount: () => void }) {
   const scrollToHowItWorks = () => document.getElementById('how-it-works')?.scrollIntoView({ behavior: 'smooth' })
   return <main className="public-home">
     <header className="public-nav">
@@ -10,8 +10,8 @@ export function LandingPage({ signIn, createAccount }: { signIn: () => void; cre
       </button>
       <nav aria-label="Public navigation">
         <button onClick={scrollToHowItWorks}>How it works</button>
-        <button onClick={signIn}>Sign in</button>
-        <button className="public-nav__cta" onClick={createAccount}>Start testing</button>
+        {!signedIn && <button onClick={signIn}>Sign in</button>}
+        <button className="public-nav__cta" onClick={createAccount}>{signedIn ? 'Open console' : 'Start testing'}</button>
       </nav>
     </header>
 
@@ -21,7 +21,7 @@ export function LandingPage({ signIn, createAccount }: { signIn: () => void; cre
         <h1>Send application email with delivery you can see.</h1>
         <p className="public-hero__lead">One API for verification codes, password resets, receipts, and product notifications. Test safely, verify your domain, then send through Amazon SES or your own SMTP infrastructure without changing application code.</p>
         <div className="public-hero__actions">
-          <button className="public-button public-button--primary" onClick={createAccount}>Create your workspace <ArrowRight size={17} /></button>
+          <button className="public-button public-button--primary" onClick={createAccount}>{signedIn ? 'Open your console' : 'Create your workspace'} <ArrowRight size={17} /></button>
           <button className="public-button public-button--secondary" onClick={scrollToHowItWorks}>See how it works</button>
         </div>
         <ul className="public-proof" aria-label="Platform highlights">
@@ -59,7 +59,7 @@ export function LandingPage({ signIn, createAccount }: { signIn: () => void; cre
     </section>
 
     <section className="public-control">
-      <div><p className="public-kicker">Built for application teams</p><h2>Operational controls stay behind a simple send API.</h2><p>Idempotent submissions prevent accidental duplicates. Per-recipient status, retry-safe webhooks, suppression handling, and provider attempt history give operators the evidence they need when delivery fails.</p><button className="public-button public-button--primary" onClick={createAccount}>Start in test mode <ArrowRight size={17} /></button></div>
+      <div><p className="public-kicker">Built for application teams</p><h2>Operational controls stay behind a simple send API.</h2><p>Idempotent submissions prevent accidental duplicates. Per-recipient status, retry-safe webhooks, suppression handling, and provider attempt history give operators the evidence they need when delivery fails.</p><button className="public-button public-button--primary" onClick={createAccount}>{signedIn ? 'Open your console' : 'Start in test mode'} <ArrowRight size={17} /></button></div>
       <div className="public-control__list">
         <p><Code2 size={18} /><span><strong>Stable integration</strong>Keep provider switching out of application code.</span></p>
         <p><MailCheck size={18} /><span><strong>Honest status</strong>“Sent” means provider accepted; “delivered” means the recipient server accepted.</span></p>
@@ -67,7 +67,7 @@ export function LandingPage({ signIn, createAccount }: { signIn: () => void; cre
       </div>
     </section>
 
-    <section className="public-final-cta"><div><h2>Build your first email flow today.</h2><p>Create a workspace, issue a test key, and send your first simulated request in minutes.</p></div><button className="public-button public-button--light" onClick={createAccount}>Create free account <ArrowRight size={17} /></button></section>
-    <footer className="public-footer"><span>CrescentSphere Mailer</span><span>Developer email infrastructure</span><button onClick={signIn}>Sign in</button></footer>
+    <section className="public-final-cta"><div><h2>Build your first email flow today.</h2><p>Create a workspace, issue a test key, and send your first simulated request in minutes.</p></div><button className="public-button public-button--light" onClick={createAccount}>{signedIn ? 'Open console' : 'Create free account'} <ArrowRight size={17} /></button></section>
+    <footer className="public-footer"><span>CrescentSphere Mailer</span><span>Developer email infrastructure</span><button onClick={signedIn ? createAccount : signIn}>{signedIn ? 'Open console' : 'Sign in'}</button></footer>
   </main>
 }

@@ -50,7 +50,7 @@ pub(crate) async fn ingest_event(
     state: &AppState,
     event: SesEvent,
     provider: &str,
-    correlation: Option<(Uuid, Uuid)>,
+    correlation: Option<(Uuid, Option<Uuid>)>,
 ) -> Response {
     if event.event_id.trim().is_empty()
         || event.message_id.trim().is_empty()
@@ -96,11 +96,18 @@ pub(crate) async fn ingest_event(
         }
     };
     let email_result = match correlation {
-        Some((email_id, attempt_id)) => sqlx::query(
+        Some((email_id, Some(attempt_id))) => sqlx::query(
             "SELECT email.id, email.workspace_id FROM emails AS email JOIN delivery_provider_attempts AS attempt ON attempt.email_id=email.id WHERE email.id=$1 AND attempt.id=$2 AND email.delivery_provider=$3 FOR UPDATE OF email",
         )
         .bind(email_id)
         .bind(attempt_id)
+        .bind(provider)
+        .fetch_optional(&mut *tx)
+        .await,
+        Some((email_id, None)) => sqlx::query(
+            "SELECT email.id, email.workspace_id FROM emails AS email JOIN delivery_provider_attempts AS attempt ON attempt.email_id=email.id WHERE email.id=$1 AND email.delivery_provider=$2 AND attempt.provider=$2 AND attempt.status='submitted' ORDER BY attempt.started_at DESC LIMIT 1 FOR UPDATE OF email",
+        )
+        .bind(email_id)
         .bind(provider)
         .fetch_optional(&mut *tx)
         .await,

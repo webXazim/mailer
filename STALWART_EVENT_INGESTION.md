@@ -68,9 +68,15 @@ Do not expose `/internal/v1/stalwart/events` through the public reverse proxy.
 ## Correlation and replay behavior
 
 For SMTP delivery, Mailer writes a message ID containing both its email UUID and
-provider-attempt UUID. A Stalwart event is accepted only when both identifiers
-match an SMTP attempt in PostgreSQL. Events for unrelated mail on the same server
-are ignored.
+provider-attempt UUID and a bounce envelope sender containing the email UUID.
+Stalwart delivery events do not always include the RFC Message-ID, so Mailer
+first uses that exact email-and-attempt correlation when present and otherwise
+uses the Mailer-controlled bounce sender plus the latest submitted SMTP attempt.
+Events for unrelated mail on the same server are ignored.
+
+Each webhook batch writes an API log entry with its accepted and ignored event
+counts. An ignored recognized event also logs its Stalwart event ID and type
+without logging the message body.
 
 Stalwart batches may be duplicated, retried, or arrive out of order. Mailer uses
 the Stalwart event ID plus recipient as an idempotency key. Complaint state wins

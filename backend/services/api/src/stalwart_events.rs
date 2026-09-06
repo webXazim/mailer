@@ -86,29 +86,32 @@ async fn ingest(State(state): State<AppState>, headers: HeaderMap, body: Bytes) 
     let mut accepted = 0_u64;
     let mut ignored = 0_u64;
     for event in batch.events {
+        let event_id = event.id.clone();
+        let event_type = event.event_type.clone();
         let Some(normalized) = normalize(event) else {
+            tracing::warn!(%event_id, %event_type, "ignored uncorrelated Stalwart event");
             ignored += 1;
             continue;
         };
-        let response = ses_events::ingest_event(
-            &state,
-            normalized.event,
-            "smtp",
-            Some(normalized.correlation),
-        )
-        .await;
+        let correlation = normalized.correlation;
+        let response =
+            ses_events::ingest_event(&state, normalized.event, "smtp", Some(correlation)).await;
         match response.status() {
             status if status.is_success() => accepted += 1,
-            StatusCode::NOT_FOUND => ignored += 1,
+            StatusCode::NOT_FOUND => {
+                tracing::warn!(%event_id, %event_type, email_id=%correlation.0, attempt_id=?correlation.1, "ignored unmatched Stalwart event");
+                ignored += 1;
+            }
             _ => return response,
         }
     }
+    tracing::info!(accepted, ignored, "processed Stalwart webhook batch");
     Json(json!({"data":{"accepted":true,"events":accepted,"ignored":ignored}})).into_response()
 }
 
 struct NormalizedEvent {
     event: ses_events::SesEvent,
-    correlation: (Uuid, Uuid),
+    correlation: (Uuid, Option<Uuid>),
 }
 
 fn normalize(event: StalwartEvent) -> Option<NormalizedEvent> {
@@ -137,8 +140,17 @@ fn normalize(event: StalwartEvent) -> Option<NormalizedEvent> {
         "incoming-report.abuse-report" | "incoming-report.fraud-report" => ("complaint", None),
         _ => return None,
     };
-    let message_id = find_string(&event.data, &["messageid", "rfcmessageid"])?;
-    let correlation = parse_correlation(&message_id)?;
+    let message_id = find_string(&event.data, &["messageid", "rfcmessageid"]);
+    let envelope_from = find_string(&event.data, &["from"]);
+    let correlation = message_id
+        .as_deref()
+        .and_then(parse_message_id_correlation)
+        .or_else(|| {
+            envelope_from
+                .as_deref()
+                .and_then(parse_envelope_correlation)
+        })?;
+    let message_id = message_id.or(envelope_from)?;
     let recipients = find_addresses(&event.data);
     Some(NormalizedEvent {
         event: ses_events::SesEvent {
@@ -157,7 +169,7 @@ fn normalize(event: StalwartEvent) -> Option<NormalizedEvent> {
     })
 }
 
-fn parse_correlation(message_id: &str) -> Option<(Uuid, Uuid)> {
+fn parse_message_id_correlation(message_id: &str) -> Option<(Uuid, Option<Uuid>)> {
     let value = message_id
         .trim()
         .trim_start_matches('<')
@@ -166,6 +178,16 @@ fn parse_correlation(message_id: &str) -> Option<(Uuid, Uuid)> {
     let mut parts = local.split('.');
     let email_id = Uuid::parse_str(parts.next()?).ok()?;
     let attempt_id = Uuid::parse_str(parts.next()?).ok()?;
+    Some((email_id, Some(attempt_id)))
+}
+
+fn parse_envelope_correlation(sender: &str) -> Option<(Uuid, Option<Uuid>)> {
+    let value = sender.trim().trim_start_matches('<').trim_end_matches('>');
+    let local = value.split_once('@')?.0;
+    let tag = local.strip_prefix("mailer+")?;
+    let mut parts = tag.split('.');
+    let email_id = Uuid::parse_str(parts.next()?).ok()?;
+    let attempt_id = parts.next().and_then(|value| Uuid::parse_str(value).ok());
     Some((email_id, attempt_id))
 }
 
@@ -282,7 +304,10 @@ fn error(status: StatusCode, code: &str, message: &str) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize, parse_correlation, signature_valid, StalwartEvent};
+    use super::{
+        normalize, parse_envelope_correlation, parse_message_id_correlation, signature_valid,
+        StalwartEvent,
+    };
     use axum::http::{HeaderMap, HeaderValue};
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
     use chrono::Utc;
@@ -311,8 +336,17 @@ mod tests {
         let email_id = Uuid::new_v4();
         let attempt_id = Uuid::new_v4();
         assert_eq!(
-            parse_correlation(&format!("<{email_id}.{attempt_id}@smtp.example.com>")),
-            Some((email_id, attempt_id))
+            parse_message_id_correlation(&format!("<{email_id}.{attempt_id}@smtp.example.com>")),
+            Some((email_id, Some(attempt_id)))
+        );
+    }
+
+    #[test]
+    fn parses_bounce_address_correlation() {
+        let email_id = Uuid::new_v4();
+        assert_eq!(
+            parse_envelope_correlation(&format!("mailer+{email_id}@bounce.smtp.example.com")),
+            Some((email_id, None))
         );
     }
 
@@ -334,5 +368,23 @@ mod tests {
         assert_eq!(delivered.event.recipients, ["recipient@example.com"]);
         let deferred = normalize(event("delivery.failed")).unwrap();
         assert_eq!(deferred.event.event_type, "deferred");
+    }
+
+    #[test]
+    fn maps_delivery_using_the_envelope_sender_when_message_id_is_absent() {
+        let email_id = Uuid::new_v4();
+        let event = StalwartEvent {
+            id: "event-2".into(),
+            created_at: Utc::now(),
+            event_type: "delivery.delivered".into(),
+            data: json!({
+                "queueId": 123,
+                "from": format!("mailer+{email_id}@bounce.smtp.example.com"),
+                "to": ["recipient@example.com"]
+            }),
+        };
+        let delivered = normalize(event).unwrap();
+        assert_eq!(delivered.correlation, (email_id, None));
+        assert_eq!(delivered.event.event_type, "delivery");
     }
 }

@@ -612,11 +612,13 @@ pub(crate) fn build_raw_message(
     email: &Email,
     message_id: Option<&str>,
 ) -> Result<Vec<u8>, ProviderFailure> {
-    let mut builder = MessageBuilder::new().from(email.sender.as_str()).to(email
-        .to
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>());
+    let (sender_name, sender_address) = mailbox_parts(&email.sender);
+    let mut builder = if let Some(name) = sender_name {
+        MessageBuilder::new().from((name, sender_address))
+    } else {
+        MessageBuilder::new().from(sender_address)
+    };
+    builder = builder.to(email.to.iter().map(String::as_str).collect::<Vec<_>>());
     if !email.cc.is_empty() {
         builder = builder.cc(email.cc.iter().map(String::as_str).collect::<Vec<_>>());
     }
@@ -625,7 +627,12 @@ pub(crate) fn build_raw_message(
         builder = builder.message_id(message_id);
     }
     if let Some(value) = &email.reply_to {
-        builder = builder.reply_to(value.as_str());
+        let (name, address) = mailbox_parts(value);
+        builder = if let Some(name) = name {
+            builder.reply_to((name, address))
+        } else {
+            builder.reply_to(address)
+        };
     }
     if let Some(value) = &email.text {
         builder = builder.text_body(value.as_str());
@@ -654,6 +661,18 @@ pub(crate) fn build_raw_message(
     builder
         .write_to_vec()
         .map_err(|error| ProviderFailure::Permanent(error.to_string()))
+}
+
+fn mailbox_parts(value: &str) -> (Option<&str>, &str) {
+    let value = value.trim();
+    if value.ends_with('>') {
+        if let Some(start) = value.rfind('<') {
+            let name = value[..start].trim();
+            let address = value[start + 1..value.len() - 1].trim();
+            return ((!name.is_empty()).then_some(name), address);
+        }
+    }
+    (None, value)
 }
 
 async fn reset_for_retry(pool: &db::DbPool, id: Uuid, reason: &str) -> Result<()> {
@@ -807,7 +826,9 @@ async fn simulate(pool: &db::DbPool, email: &Email) -> Result<Outcome> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_raw_message, provider_control, Attachment, Email, ProviderControl};
+    use super::{
+        build_raw_message, mailbox_parts, provider_control, Attachment, Email, ProviderControl,
+    };
     use uuid::Uuid;
 
     #[test]
@@ -861,10 +882,35 @@ mod tests {
         let raw = String::from_utf8(raw).expect("MIME headers are UTF-8");
 
         assert!(raw.contains(&message_id));
+        let from_header = raw
+            .lines()
+            .find(|line| line.starts_with("From:"))
+            .expect("From header must exist");
+        let reply_to_header = raw
+            .lines()
+            .find(|line| line.starts_with("Reply-To:"))
+            .expect("Reply-To header must exist");
+        assert_eq!(
+            from_header, "From: \"Crescent Mail\" <sender@example.com>",
+            "unexpected structured From header: {from_header:?}"
+        );
+        assert_eq!(reply_to_header, "Reply-To: <reply@example.com>");
         assert!(raw.contains("to@example.com"));
         assert!(raw.contains("cc@example.com"));
         assert!(!raw.contains("secret@example.com"));
         assert!(!raw.to_ascii_lowercase().contains("\nbcc:"));
         assert!(raw.contains("test.txt"));
+    }
+
+    #[test]
+    fn splits_display_mailboxes_for_structured_mime_headers() {
+        assert_eq!(
+            mailbox_parts("CrescentSphere Mailer <no-reply@mailer.example.com>"),
+            (Some("CrescentSphere Mailer"), "no-reply@mailer.example.com")
+        );
+        assert_eq!(
+            mailbox_parts("no-reply@mailer.example.com"),
+            (None, "no-reply@mailer.example.com")
+        );
     }
 }

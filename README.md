@@ -123,6 +123,10 @@ cohorts, pause controls, caps, and rollback are covered in
 [Delivery routing and rollback](DELIVERY_ROUTING.md). The independent Garage option
 is covered in [Self-hosted object storage](SELF_HOSTED_STORAGE.md).
 
+For day-to-day production commands and incident recipes, use the
+[operator controls runbook](CONTROLS.md). It covers safe SES/SMTP switching,
+workspace containment, provider caps, service lifecycle, and recovery controls.
+
 The public email API is provider-neutral. Applications keep the same endpoint,
 API key, idempotency key, request body, status polling, and webhooks when an
 operator switches between SES and SMTP. Use `sh manage default-provider ses` or

@@ -3,6 +3,9 @@ FROM rust:1.97-bookworm AS build
 WORKDIR /src
 ARG CARGO_BUILD_JOBS=1
 COPY . .
+# sqlx::migrate! embeds migrations in cs-mail-db at compile time. The persistent
+# target cache can otherwise reuse that crate after only a migration file changes.
+RUN touch crates/db/src/lib.rs
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \

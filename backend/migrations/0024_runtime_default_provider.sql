@@ -1,5 +1,5 @@
 ALTER TABLE delivery_operator_controls
-    ADD COLUMN default_provider text
+    ADD COLUMN IF NOT EXISTS default_provider text
         CHECK (default_provider IS NULL OR default_provider IN ('ses', 'smtp'));
 
 COMMENT ON COLUMN delivery_operator_controls.default_provider IS

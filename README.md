@@ -123,6 +123,13 @@ cohorts, pause controls, caps, and rollback are covered in
 [Delivery routing and rollback](DELIVERY_ROUTING.md). The independent Garage option
 is covered in [Self-hosted object storage](SELF_HOSTED_STORAGE.md).
 
+The public email API is provider-neutral. Applications keep the same endpoint,
+API key, idempotency key, request body, status polling, and webhooks when an
+operator switches between SES and SMTP. Use `sh manage default-provider ses` or
+`sh manage default-provider smtp` for new default traffic; existing accepted
+messages retain their stored route. See the [platform upgrade plan](PLATFORM_UPGRADE_PLAN.md)
+for the developer, system-email, multi-domain, and rollout gates.
+
 In the Cloudflare dashboard, configure the supplied tunnel's published application:
 
 | Setting | Value |

@@ -576,9 +576,8 @@ async fn resolve_delivery_provider(
             "Unable to resolve delivery route",
         )
     })?;
-    let requested = route.unwrap_or_else(|| state.delivery_provider.clone());
     let controls = sqlx::query(
-        "SELECT smtp_paused,smtp_daily_email_limit,ses_rollback_enabled FROM delivery_operator_controls WHERE singleton=true FOR SHARE",
+        "SELECT default_provider,smtp_paused,smtp_daily_email_limit,ses_rollback_enabled FROM delivery_operator_controls WHERE singleton=true FOR SHARE",
     )
     .fetch_one(&mut **tx)
     .await
@@ -589,6 +588,8 @@ async fn resolve_delivery_provider(
             "Unable to load delivery controls",
         )
     })?;
+    let runtime_default: Option<String> = controls.get("default_provider");
+    let requested = requested_provider(route, runtime_default, &state.delivery_provider);
     let rollback = controls.get::<bool, _>("ses_rollback_enabled");
     let paused = controls.get::<bool, _>("smtp_paused");
     let selected = choose_delivery_provider(
@@ -631,6 +632,16 @@ async fn resolve_delivery_provider(
         .map(str::to_owned)
         .map_err(delivery_unavailable)
     }
+}
+
+fn requested_provider(
+    workspace_route: Option<String>,
+    runtime_default: Option<String>,
+    configured_default: &str,
+) -> String {
+    workspace_route
+        .or(runtime_default)
+        .unwrap_or_else(|| configured_default.to_owned())
 }
 
 fn choose_delivery_provider(
@@ -803,9 +814,19 @@ fn error(status: StatusCode, code: &str, message: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::{
-        choose_delivery_provider, mailbox_address, sender_domain, should_contain_rate, valid_email,
-        validate_attachments, AttachmentInput,
+        choose_delivery_provider, mailbox_address, requested_provider, sender_domain,
+        should_contain_rate, valid_email, validate_attachments, AttachmentInput,
     };
+
+    #[test]
+    fn workspace_route_precedes_runtime_and_configured_defaults() {
+        assert_eq!(
+            requested_provider(Some("ses".into()), Some("smtp".into()), "ses"),
+            "ses"
+        );
+        assert_eq!(requested_provider(None, Some("smtp".into()), "ses"), "smtp");
+        assert_eq!(requested_provider(None, None, "ses"), "ses");
+    }
 
     #[test]
     fn parses_display_name_sender() {

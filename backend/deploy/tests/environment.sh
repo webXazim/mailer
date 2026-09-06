@@ -83,6 +83,13 @@ sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=unsafe-password-with-special-c
 if sh manage preflight >/dev/null 2>&1; then exit 1; fi
 cp valid.env .env
 
+# Mixed-provider production keeps both credential sets ready for an online switch.
+sed -i 's/^SMTP_HOST=$/SMTP_HOST=smtp.example.test/' .env
+sed -i 's/^SMTP_USERNAME=$/SMTP_USERNAME=mailer-worker/' .env
+sed -i 's/^SMTP_PASSWORD=$/SMTP_PASSWORD=test-smtp-password/' .env
+sed -i 's/^STALWART_WEBHOOK_TOKEN=$/STALWART_WEBHOOK_TOKEN=0123456789abcdef0123456789abcdef/' .env
+sed -i 's/^STALWART_WEBHOOK_SIGNING_KEY=$/STALWART_WEBHOOK_SIGNING_KEY=fedcba9876543210fedcba9876543210/' .env
+
 : >docker-calls.log
 if FAIL_BUILD=1 sh manage deploy >/dev/null 2>&1; then exit 1; fi
 if grep -q ' up ' docker-calls.log; then
@@ -97,6 +104,9 @@ if grep -q 'down\|prune\|--volumes' docker-calls.log; then exit 1; fi
 sh manage smtp-pause
 sh manage smtp-resume
 sh manage smtp-cap 25
+sh manage default-provider smtp
+sh manage default-provider ses
+sh manage default-provider environment
 sh manage ses-rollback enable
 sh manage route-workspace 11111111-1111-4111-8111-111111111111 smtp
 sh manage route-workspace 11111111-1111-4111-8111-111111111111 default
@@ -106,6 +116,7 @@ sh manage pause-workspace 11111111-1111-4111-8111-111111111111
 sh manage resume-workspace 11111111-1111-4111-8111-111111111111
 sh manage security-events 7
 if sh manage smtp-cap invalid >/dev/null 2>&1; then exit 1; fi
+if sh manage default-provider invalid >/dev/null 2>&1; then exit 1; fi
 if sh manage pause-workspace invalid >/dev/null 2>&1; then exit 1; fi
 grep -q 'delivery_operator_controls' docker-calls.log
 grep -q 'workspace_delivery_routes' docker-calls.log

@@ -27,6 +27,12 @@ Provider routing is guarded by a global SMTP pause, a daily admission cap,
 per-workspace cohorts, and pre-attempt-only SES rollback. `OPERATIONS.md` documents
 monitoring, rollout, incident response, and recovery.
 
+The runtime default provider can now be changed transactionally without editing
+the environment or restarting services. Each accepted message remains pinned to
+the chosen provider. The Stalwart deployment guide also includes the required
+dynamic DKIM policy that maps `bounce.<domain>` envelopes back to each provisioned
+sending domain; this replaces the initial single-domain hard-coded workaround.
+
 ## Live acceptance gates still outstanding
 
 These require the production VPS, DNS, real inboxes, and production credentials;

@@ -5,6 +5,22 @@ The worker never changes provider after a provider attempt exists. This prevents
 timeout or lost response from causing the same message to be submitted through a
 second provider.
 
+`DELIVERY_PROVIDER` is the boot-time fallback. Operators can switch the runtime
+default for new submissions without editing `.env` or restarting services:
+
+```sh
+sudo sh manage default-provider smtp
+sudo sh manage default-provider ses
+sudo sh manage default-provider environment
+```
+
+`environment` clears the runtime override and follows `DELIVERY_PROVIDER` again.
+The switch affects only messages accepted after the transaction commits. Existing
+queued mail remains pinned to its stored provider, except for the documented safe
+SMTP-to-SES rollback before the first provider attempt. Account verification and
+password-reset messages use the normal Mailer API, so they follow the route of the
+workspace owning `ACCOUNT_EMAIL_API_KEY`.
+
 ## Safe initial state
 
 Migration `0021_delivery_routing_controls.sql` starts with SMTP paused, a 100-email

@@ -9,7 +9,54 @@ import { SendDialog } from './SendDialog'
 import './console.css'
 
 function DeveloperDocs() {
-  return <Panel title="Integrate with the API"><p>Create a test key with emails:send and emails:read. Keep the secret on your server.</p><pre>{`curl ${window.location.origin}/api/v1/emails \\\n  -H "Authorization: Bearer $MAILER_API_KEY" \\\n  -H "Idempotency-Key: order-123-confirmation" \\\n  -H "Content-Type: application/json" \\\n  -d '{"from":"sender@sandbox.mailer.invalid","to":["you@example.com"],"subject":"Hello","text":"Your first test email"}'`}</pre><p>Read status using GET /v1/emails/{'{id}'}. List with GET /v1/emails?limit=25&amp;offset=0. A production key requires a verified sender domain.</p><p>Test delivery defaults to delivered. Use <code>bounce@simulator.mailer.invalid</code> or <code>complaint@simulator.mailer.invalid</code> to exercise feedback and suppression. Only test keys simulate these addresses.</p><h3>Webhook verification</h3><p>Verify raw request bytes before parsing JSON. Sign <code>webhook-id + "." + webhook-timestamp + "." + rawBody</code> using HMAC-SHA256, with the complete whsec_ secret as the UTF-8 key. Compare the unpadded base64url digest to the value after <code>v1,</code> in webhook-signature using constant-time comparison. Reject timestamps more than five minutes away and deduplicate webhook-id.</p><p>Payloads use names such as email.delivery. data.emailId matches the send response, and data.environment separates test and production. Deliveries are at least once; receivers must be idempotent and return 2xx promptly.</p><h3>Current API scope</h3><p>Up to 50 total To/CC/BCC recipients, text/HTML, reply_to, metadata, and attachments. Custom headers/tags, templates, billing, MFA, and team management are not currently available. The monthly limit counts accepted message submissions, including tests; it is not a billing meter or the AWS recipient quota.</p></Panel>
+  const endpoint = `${window.location.origin}/api/v1/emails`
+  return <Panel title="Integrate with the API">
+    <p>Create a test key with <code>emails:send</code> and <code>emails:read</code>. Keep it in a server-side secret store; never put it in browser or mobile code. The API contract does not change when the platform switches between SES and its own SMTP infrastructure.</p>
+    <h3>cURL</h3>
+    <pre>{`curl ${endpoint} \\\n+  -H "Authorization: Bearer $MAILER_API_KEY" \\\n+  -H "Idempotency-Key: user-42-welcome-v1" \\\n+  -H "Content-Type: application/json" \\\n+  -d '{"from":"sender@sandbox.mailer.invalid","to":["you@example.com"],"subject":"Welcome","text":"Your account is ready."}'`}</pre>
+    <h3>Node.js</h3>
+    <pre>{`const response = await fetch("${endpoint}", {
+  method: "POST",
+  headers: {
+    Authorization: \`Bearer \${process.env.MAILER_API_KEY}\`,
+    "Content-Type": "application/json",
+    "Idempotency-Key": \`user-\${user.id}-welcome-v1\`
+  },
+  body: JSON.stringify({
+    from: "Acme <no-reply@mail.example.com>",
+    to: [user.email],
+    subject: "Welcome to Acme",
+    text: "Your account is ready."
+  })
+});
+if (!response.ok) throw new Error(\`Mailer rejected request: \${response.status}\`);
+const { data } = await response.json(); // data.id and initial status "queued"`}</pre>
+    <h3>Python</h3>
+    <pre>{`response = requests.post(
+    "${endpoint}",
+    headers={
+        "Authorization": f"Bearer {os.environ['MAILER_API_KEY']}",
+        "Idempotency-Key": f"user-{user_id}-welcome-v1",
+    },
+    json={
+        "from": "Acme <no-reply@mail.example.com>",
+        "to": [recipient],
+        "subject": "Welcome to Acme",
+        "text": "Your account is ready.",
+    },
+    timeout=10,
+)
+response.raise_for_status()`}</pre>
+    <h3>Reliable application email</h3>
+    <p>Use a stable, event-specific idempotency key for verification, password reset, receipts, alerts, and other transactional mail. Retry network errors and HTTP 5xx/429 responses with the same key. Do not create a new key unless you intend to create another email.</p>
+    <p>An accepted request returns HTTP 202 and status <code>queued</code>. <code>sent</code> means the delivery provider accepted the message; only <code>delivered</code> means the recipient server accepted it. Read status using <code>GET /v1/emails/{'{id}'}</code>, or consume signed webhooks for final outcomes.</p>
+    <p>A production key requires a verified sender domain. Test delivery is simulated and defaults to delivered. Use <code>bounce@simulator.mailer.invalid</code> or <code>complaint@simulator.mailer.invalid</code> to exercise feedback and suppression.</p>
+    <h3>Webhook verification</h3>
+    <p>Verify raw request bytes before parsing JSON. Sign <code>webhook-id + "." + webhook-timestamp + "." + rawBody</code> using HMAC-SHA256, with the complete <code>whsec_</code> secret as the UTF-8 key. Compare the unpadded base64url digest to the value after <code>v1,</code> in <code>webhook-signature</code> using constant-time comparison. Reject timestamps more than five minutes away and deduplicate <code>webhook-id</code>.</p>
+    <p>Payloads use names such as <code>email.delivery</code>. <code>data.emailId</code> matches the send response, and <code>data.environment</code> separates test and production. Delivery is at least once, so receivers must be idempotent and return 2xx promptly.</p>
+    <h3>Current API scope</h3>
+    <p>Up to 50 total To/CC/BCC recipients, text/HTML, <code>reply_to</code>, metadata, and attachments. Custom headers/tags, templates, billing, MFA, and team management are not currently available. The monthly limit counts accepted message submissions, including tests.</p>
+  </Panel>
 }
 const navigation = [{ path: '/', label: 'Overview', icon: Activity }, { path: '/emails', label: 'Emails', icon: Mail }, { path: '/domains', label: 'Domains', icon: Globe2 }, { path: '/api-keys', label: 'API keys', icon: KeyRound, admin: true }, { path: '/webhooks', label: 'Webhooks', icon: Webhook, admin: true }, { path: '/suppressions', label: 'Suppressions', icon: ShieldBan, admin: true }, { path: '/developers', label: 'API guide', icon: BookOpen }]
 export default function Console() {

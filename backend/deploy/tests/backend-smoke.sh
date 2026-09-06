@@ -64,7 +64,7 @@ status=$(compose exec -T api curl --silent --output /dev/null --write-out '%{htt
 test "$status" = 404
 compose exec -T postgres psql --username mailer --dbname mailer --tuples-only \
     --command 'SELECT count(*) FROM _sqlx_migrations;' | grep -Eq '[1-9][0-9]*'
-test "$(compose exec -T postgres psql -At --username mailer --dbname mailer --command "SELECT smtp_paused::text||':'||smtp_daily_email_limit||':'||ses_rollback_enabled::text FROM delivery_operator_controls WHERE singleton=true")" = 'true:100:true'
+test "$(compose exec -T postgres psql -At --username mailer --dbname mailer --command "SELECT COALESCE(default_provider,'environment')||':'||smtp_paused::text||':'||smtp_daily_email_limit||':'||ses_rollback_enabled::text FROM delivery_operator_controls WHERE singleton=true")" = 'environment:true:100:true'
 test "$(compose exec -T postgres psql -At --username mailer --dbname mailer --command "WITH first AS (INSERT INTO delivery_provider_daily_usage(usage_date,provider,emails_admitted) VALUES(current_date,'smtp',1) ON CONFLICT(usage_date,provider) DO UPDATE SET emails_admitted=delivery_provider_daily_usage.emails_admitted+1 WHERE delivery_provider_daily_usage.emails_admitted<1 RETURNING 1) SELECT count(*) FROM first")" = 1
 test "$(compose exec -T postgres psql -At --username mailer --dbname mailer --command "WITH capped AS (INSERT INTO delivery_provider_daily_usage(usage_date,provider,emails_admitted) VALUES(current_date,'smtp',1) ON CONFLICT(usage_date,provider) DO UPDATE SET emails_admitted=delivery_provider_daily_usage.emails_admitted+1 WHERE delivery_provider_daily_usage.emails_admitted<1 RETURNING 1) SELECT count(*) FROM capped")" = 0
 

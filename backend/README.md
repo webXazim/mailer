@@ -57,6 +57,11 @@ Stalwart or another SMTP relay. A provider timeout after it may have accepted a 
 treated as ambiguous: the email is quarantined for manual review after the
 provider result is uncertain instead of being silently resent. Typed throttling errors retry with backoff; automatic SDK retries are disabled for sending. Shutdown drains bounded in-flight work; maintenance reconciles stale claims and expired queues.
 
+Operators may override the environment default at runtime with
+`sh manage default-provider ses|smtp|environment`. Workspace routes take
+precedence. The route is resolved and stored in the admission transaction, so
+a runtime switch affects only newly accepted messages.
+
 SES delivery, bounce, complaint, reject, rendering-failure, open, and click
 events are consumed from SQS through an SNS subscription. The worker verifies
 the SNS topic, certificate URL, X.509 certificate, and RSA signature before
@@ -154,7 +159,7 @@ static access-key variables empty.
 ### Outbound delivery provider
 
 Use `DELIVERY_PROVIDER=ses` until the Stalwart acceptance and event-ingestion
-gates are complete. To submit through Stalwart, set `DELIVERY_PROVIDER=smtp`,
+gates are complete. To make Stalwart the boot-time fallback, set `DELIVERY_PROVIDER=smtp`,
 `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and
 `SMTP_HELO_NAME`. Only implicit TLS and required STARTTLS are accepted. The worker
 uses the same MIME builder for both providers, omits Bcc from headers, and sends
@@ -167,6 +172,8 @@ means Stalwart queued the message; it does not prove recipient delivery. Keep SE
 events enabled for SES-routed messages while those attempts remain in flight.
 When changing an existing deployment, keep all worker SES/event variables set until
 previously accepted SES messages have drained; otherwise clear the complete group.
+For an online switch with both providers configured, use
+`sh manage default-provider smtp` or `sh manage default-provider ses` instead.
 
 ### S3-compatible object storage
 

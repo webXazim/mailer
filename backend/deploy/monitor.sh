@@ -11,7 +11,10 @@ if [ -z "$failure" ] && { [ -z "$disk_used" ] || [ "$disk_used" -ge "${DISK_ALER
     failure="filesystem usage is ${disk_used:-unknown}%"
 fi
 
-if [ -z "$failure" ] && [ "${DELIVERY_PROVIDER:-ses}" = smtp ]; then
+# Both providers can be configured while the database selects the runtime route.
+# Verify SMTP whenever it is available for routing, even if DELIVERY_PROVIDER is
+# still the environment fallback for SES.
+if [ -z "$failure" ] && [ -n "${SMTP_HOST:-}" ]; then
     certificate=$(mktemp)
     trap 'rm -f "$certificate"' EXIT HUP INT TERM
     if ! timeout 15 openssl s_client -connect "${MTA_PUBLIC_HOST:?MTA_PUBLIC_HOST is required}:465" \

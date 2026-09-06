@@ -35,6 +35,7 @@ Commands:
   security-events [DAYS] Show containment and operator security events
   account-email-status Show auth-email and downstream SES status for an address
   delivery-routing-status Show provider controls, cohorts, and today's volume
+  default-provider PROVIDER Route new default traffic to ses, smtp, or environment
   smtp-pause          Stop new SMTP attempts; safely defer or roll back queued mail
   smtp-resume         Allow SMTP attempts for configured cohorts
   smtp-cap NUMBER     Set the global daily SMTP admission cap
@@ -205,11 +206,30 @@ SQL
         ;;
     delivery-routing-status)
         production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --variable=ON_ERROR_STOP=1 <<'SQL'
-SELECT smtp_paused,smtp_daily_email_limit,ses_rollback_enabled,updated_at FROM delivery_operator_controls WHERE singleton=true;
+SELECT COALESCE(default_provider,'environment') AS default_provider,smtp_paused,smtp_daily_email_limit,ses_rollback_enabled,updated_at FROM delivery_operator_controls WHERE singleton=true;
 SELECT usage_date,provider,emails_admitted FROM delivery_provider_daily_usage WHERE usage_date>=current_date-7 ORDER BY usage_date DESC,provider;
 SELECT route.workspace_id,workspace.name,route.provider,route.updated_at FROM workspace_delivery_routes route JOIN workspaces workspace ON workspace.id=route.workspace_id ORDER BY route.updated_at DESC;
 SELECT action,details,created_at FROM delivery_control_audit ORDER BY created_at DESC LIMIT 20;
 SQL
+        ;;
+    default-provider)
+        shift
+        provider=${1:-}
+        case "$provider" in
+            smtp)
+                load_environment
+                test -n "${SMTP_HOST:-}" && test -n "${SMTP_USERNAME:-}" && test -n "${SMTP_PASSWORD:-}" && test -n "${SMTP_HELO_NAME:-}" && test -n "${STALWART_WEBHOOK_TOKEN:-}" && test -n "${STALWART_WEBHOOK_SIGNING_KEY:-}" || { echo 'SMTP and Stalwart event credentials must be configured before selecting smtp' >&2; exit 1; }
+                value="'smtp'"
+                ;;
+            ses)
+                load_environment
+                test -n "${SES_CONFIGURATION_SET:-}" && test -n "${SES_EVENTS_QUEUE_URL:-}" && test -n "${SES_EVENTS_TOPIC_ARN:-}" || { echo 'SES configuration set and event pipeline must be configured before selecting ses' >&2; exit 1; }
+                value="'ses'"
+                ;;
+            environment) value=NULL ;;
+            *) echo 'Usage: sh manage default-provider ses|smtp|environment' >&2; exit 2 ;;
+        esac
+        production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --variable=ON_ERROR_STOP=1 --command "BEGIN; SELECT pg_advisory_xact_lock(hashtextextended('delivery-routing-control',0)); UPDATE delivery_operator_controls SET default_provider=$value,updated_at=now() WHERE singleton=true; INSERT INTO delivery_control_audit(action,details) VALUES('default-provider',jsonb_build_object('provider','$provider')); COMMIT;"
         ;;
     smtp-pause|smtp-resume)
         paused=true

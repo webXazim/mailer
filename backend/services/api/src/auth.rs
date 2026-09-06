@@ -1,4 +1,4 @@
-use super::{emails::client_ip, AppState};
+use super::{account_email_templates, emails::client_ip, AppState};
 use ::auth::{
     generate_token, generate_verification_code, hash_password, hash_token, verify_password,
 };
@@ -290,7 +290,7 @@ async fn queue_verification(
     email: &str,
     code: &str,
 ) -> Result<(), sqlx::Error> {
-    let body = format!("Your CrescentSphere Mailer verification code is:\n\n{code}\n\nThis code expires in 15 minutes. If you did not create this account, ignore this email.");
+    let email_content = account_email_templates::verification(code);
     sqlx::query(
         "UPDATE email_verification_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL",
     )
@@ -299,8 +299,8 @@ async fn queue_verification(
     .await?;
     sqlx::query("INSERT INTO email_verification_tokens (user_id,token_hash,expires_at) VALUES ($1,$2,now()+interval '15 minutes')")
         .bind(user_id).bind(hash_token(code)).execute(&mut **tx).await?;
-    sqlx::query("INSERT INTO account_emails (recipient,subject,body,expires_at) VALUES ($1,'Your Mailer verification code',$2,now()+interval '15 minutes')")
-        .bind(email).bind(body).execute(&mut **tx).await?;
+    sqlx::query("INSERT INTO account_emails (recipient,subject,body,html_body,expires_at) VALUES ($1,$2,$3,$4,now()+interval '15 minutes')")
+        .bind(email).bind(email_content.subject).bind(email_content.text).bind(email_content.html).execute(&mut **tx).await?;
     Ok(())
 }
 
@@ -727,9 +727,9 @@ async fn request_reset(
                 state.console_origin.trim_end_matches('/'),
                 token
             );
-            let body = format!("Reset your Mailer password using this link (valid for one hour):\n\n{link}\n\nIf you did not request this, ignore this email.");
+            let email_content = account_email_templates::password_reset(&link);
             if sqlx::query("INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES ($1,$2,now()+interval '1 hour')").bind(user_id).bind(hash_token(&token)).execute(&mut *tx).await.is_err()
-                || sqlx::query("INSERT INTO account_emails (recipient,subject,body,expires_at) VALUES ($1,'Reset your Mailer password',$2,now()+interval '1 hour')").bind(&email).bind(body).execute(&mut *tx).await.is_err()
+                || sqlx::query("INSERT INTO account_emails (recipient,subject,body,html_body,expires_at) VALUES ($1,$2,$3,$4,now()+interval '1 hour')").bind(&email).bind(email_content.subject).bind(email_content.text).bind(email_content.html).execute(&mut *tx).await.is_err()
                 || tx.commit().await.is_err() {
                 return error(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "Recovery temporarily unavailable");
             }

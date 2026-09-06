@@ -1,3 +1,4 @@
+mod account_email_templates;
 mod activity;
 mod api_keys;
 mod auth;

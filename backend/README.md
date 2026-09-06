@@ -148,7 +148,9 @@ includes its ARN. For account email, create a production Mailer key with only
 `emails:send`, set it as `ACCOUNT_EMAIL_API_KEY`, set `ACCOUNT_EMAIL_FROM` to an address
 under a verified domain, and enable `AUTH_EMAIL_DELIVERY_ENABLED`. The worker submits
 verification and password-reset email to the internal Mailer API; normal delivery and
-SES event processing then apply.
+provider event processing then applies. Account messages are multipart text and
+responsive HTML, and queued sensitive content is erased after submission or a
+terminal failure.
 
 Provide the `API_AWS_*` and `WORKER_AWS_*` credentials only through the VPS
 secret environment. Use separate IAM users: the API identity manages SES

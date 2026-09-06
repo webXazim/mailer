@@ -4,6 +4,7 @@ import { Activity, Globe2, KeyRound, LogOut, Mail, Menu, Send, ShieldBan, Webhoo
 import { api, ApiError } from '../../lib/api/client'
 import { Envelope, Environment, Session, ErrorNotice, Panel, Refresh, errorText, useAction } from './shared'
 import { Authentication } from './Authentication'
+import { LandingPage } from './LandingPage'
 import { Domains, Emails, Keys, Suppressions, Webhooks } from './Pages'
 import { SendDialog } from './SendDialog'
 import './console.css'
@@ -59,9 +60,16 @@ response.raise_for_status()`}</pre>
   </Panel>
 }
 const navigation = [{ path: '/', label: 'Overview', icon: Activity }, { path: '/emails', label: 'Emails', icon: Mail }, { path: '/domains', label: 'Domains', icon: Globe2 }, { path: '/api-keys', label: 'API keys', icon: KeyRound, admin: true }, { path: '/webhooks', label: 'Webhooks', icon: Webhook, admin: true }, { path: '/suppressions', label: 'Suppressions', icon: ShieldBan, admin: true }, { path: '/developers', label: 'API guide', icon: BookOpen }]
+const environmentKey = 'crescentsphere-mailer-environment'
+const authPaths = ['/login', '/signup', '/forgot-password', '/reset-password', '/verify-email', '/resend-verification']
+
+function savedEnvironment(): Environment {
+  try { return window.localStorage.getItem(environmentKey) === 'production' ? 'production' : 'test' } catch { return 'test' }
+}
+
 export default function Console() {
   const [session, setSession] = useState<Session | null>(null), [loading, setLoading] = useState(true), [sessionError, setSessionError] = useState('')
-  const [environment, setEnvironment] = useState<Environment>('test'), [sendOpen, setSendOpen] = useState(false), [mobileOpen, setMobileOpen] = useState(false), [revision, setRevision] = useState(0)
+  const [environment, setEnvironment] = useState<Environment>(savedEnvironment), [sendOpen, setSendOpen] = useState(false), [mobileOpen, setMobileOpen] = useState(false), [revision, setRevision] = useState(0)
   const navigate = useNavigate(), location = useLocation(), action = useAction()
   const loadSession = useCallback(async () => {
     try { const value = await api.get<Envelope<Session>>('/v1/auth/session'); setSession(value.data); setSessionError('') } catch (error) {
@@ -70,9 +78,15 @@ export default function Console() {
   }, [])
   const refreshProductionAccess = useCallback(() => { void loadSession() }, [loadSession])
   useEffect(() => { void loadSession(); const expired = () => { setSession(null); setSendOpen(false) }; window.addEventListener('mailer:session-expired', expired); return () => window.removeEventListener('mailer:session-expired', expired) }, [loadSession])
+  useEffect(() => {
+    if (!session) return
+    if (environment === 'production' && !session.workspace.production_enabled) { setEnvironment('test'); return }
+    try { window.localStorage.setItem(environmentKey, environment) } catch { /* Storage can be unavailable in private browsing. */ }
+  }, [environment, session])
   if (loading) return <main className="live-auth" role="status">Loading your workspace…</main>
+  if (!session && location.pathname === '/') return <LandingPage signIn={() => navigate('/login')} createAccount={() => navigate('/signup')} />
   if (sessionError && !session) return <main className="live-auth"><ErrorNotice error={sessionError} /><Refresh reload={() => void loadSession()} /></main>
-  if (!session || ['/forgot-password', '/reset-password', '/verify-email', '/resend-verification'].includes(location.pathname)) return <Authentication signedIn={setSession} />
+  if (!session || authPaths.includes(location.pathname)) return <Authentication signedIn={setSession} />
   const admin = ['owner', 'admin'].includes(session.user.role)
   const route = navigation.find(item => item.path === location.pathname && (!item.admin || admin)) ?? navigation[0]
   function go(path: string) { navigate(path); setMobileOpen(false) }

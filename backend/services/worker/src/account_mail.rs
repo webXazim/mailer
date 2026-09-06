@@ -33,6 +33,7 @@ struct AccountMessage<'a> {
     recipient: &'a str,
     subject: &'a str,
     text: &'a str,
+    html: Option<&'a str>,
 }
 
 pub async fn run(
@@ -56,13 +57,14 @@ pub async fn run(
         let Some(from) = from.as_deref() else {
             continue;
         };
-        let row=sqlx::query("UPDATE account_emails SET status='processing',attempts=attempts+1,updated_at=now() WHERE id=(SELECT id FROM account_emails WHERE status='queued' AND available_at<=now() AND expires_at>now() ORDER BY available_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,recipient,subject,body,attempts")
+        let row=sqlx::query("UPDATE account_emails SET status='processing',attempts=attempts+1,updated_at=now() WHERE id=(SELECT id FROM account_emails WHERE status='queued' AND available_at<=now() AND expires_at>now() ORDER BY available_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,recipient,subject,body,html_body,attempts")
             .fetch_optional(&pool).await?;
         let Some(row) = row else { continue };
         let id: Uuid = row.get("id");
         let recipient: String = row.get("recipient");
         let subject: String = row.get("subject");
         let body: String = row.get("body");
+        let html_body: Option<String> = row.get("html_body");
         let attempts: i32 = row.get("attempts");
 
         let outcome = if let Some(key) = api_key.as_deref() {
@@ -76,6 +78,7 @@ pub async fn run(
                     recipient: &recipient,
                     subject: &subject,
                     text: &body,
+                    html: html_body.as_deref(),
                 },
             )
             .await
@@ -88,14 +91,14 @@ pub async fn run(
 
         match outcome {
             Ok(AccountDelivery::Submitted(email_id)) => {
-                sqlx::query("UPDATE account_emails SET status='submitted',body='',mailer_email_id=$2,updated_at=now() WHERE id=$1").bind(id).bind(email_id).execute(&pool).await?;
+                sqlx::query("UPDATE account_emails SET status='submitted',body='',html_body=NULL,mailer_email_id=$2,updated_at=now() WHERE id=$1").bind(id).bind(email_id).execute(&pool).await?;
             }
             Err(failure) => {
                 let (retry, reason) = match failure {
                     MailerFailure::Retryable(reason) => (attempts < 5, reason),
                     MailerFailure::Permanent(reason) => (false, reason),
                 };
-                sqlx::query("UPDATE account_emails SET status=$2,body=CASE WHEN $2='queued' THEN body ELSE '' END,last_error=$3,available_at=now()+interval '30 seconds',updated_at=now() WHERE id=$1").bind(id).bind(if retry {"queued"} else {"failed"}).bind(reason).execute(&pool).await?;
+                sqlx::query("UPDATE account_emails SET status=$2,body=CASE WHEN $2='queued' THEN body ELSE '' END,html_body=CASE WHEN $2='queued' THEN html_body ELSE NULL END,last_error=$3,available_at=now()+interval '30 seconds',updated_at=now() WHERE id=$1").bind(id).bind(if retry {"queued"} else {"failed"}).bind(reason).execute(&pool).await?;
             }
         }
     }
@@ -116,6 +119,7 @@ where
         "to": [message.recipient],
         "subject": message.subject,
         "text": message.text,
+        "html": message.html,
         "environment": "production"
     }))
     .map_err(|error| MailerFailure::Permanent(error.to_string()))?;

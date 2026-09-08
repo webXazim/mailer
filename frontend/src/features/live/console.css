@@ -9,6 +9,18 @@
 .live-error { padding: 12px 16px; background: #fff0ef; color: #a62b25; border: 1px solid #efc7c4; border-radius: 8px; overflow-wrap: anywhere; }
 .live-notice { padding: 12px 16px; background: #effaf4; color: #176b42; border: 1px solid #c0e6ce; border-radius: 8px; }
 .live-notice--pending { background: #f4f7fb; color: #41536f; border-color: #ccd6e5; }
+.domain-progress { align-items: flex-start; background: #f5f8ff; border: 1px solid #ccdaf6; border-radius: 10px; color: #27466f; display: flex; gap: 13px; padding: 16px; }
+.domain-progress__body { flex: 1; min-width: 0; }
+.domain-progress__body > strong { color: #1e3f70; display: block; font-size: 14px; }
+.domain-progress__body > p { color: #526987; font-size: 12px; margin: 5px 0 12px; }
+.domain-progress__track { background: #dce6f7; border-radius: 999px; height: 4px; overflow: hidden; }
+.domain-progress__track > span { animation: domain-progress 1.6s ease-in-out infinite; background: #3568d4; border-radius: inherit; display: block; height: 100%; width: 35%; }
+.domain-progress__meta { color: #647792; display: flex; flex-wrap: wrap; font-size: 11px; gap: 6px 20px; justify-content: space-between; margin-top: 9px; }
+.domain-cloudflare-action { display: grid; justify-items: start; }
+.live-spinner { animation: live-spin .8s linear infinite; border: 2px solid #b9c9e5; border-radius: 50%; border-top-color: #3568d4; display: inline-block; flex: 0 0 auto; height: 17px; margin-top: 1px; width: 17px; }
+.live-spinner--button { border-color: rgba(255,255,255,.45); border-top-color: #fff; height: 14px; margin: 0 7px 0 0; vertical-align: -2px; width: 14px; }
+@keyframes live-spin { to { transform: rotate(360deg); } }
+@keyframes domain-progress { 0% { transform: translateX(-110%); } 50% { transform: translateX(95%); } 100% { transform: translateX(300%); } }
 .live-actions { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
 .live-inline-form { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; }
 .live-inline-form .field { flex: 1; min-width: 220px; }
@@ -71,6 +83,7 @@
 .live-panel code { white-space: normal; overflow-wrap: anywhere; }
 .live-panel textarea,.live-auth input,.live-send input,.live-send textarea { width: 100%; }
 button:disabled { opacity: .55; cursor: not-allowed; }
+@media(prefers-reduced-motion:reduce) { .live-spinner,.domain-progress__track > span { animation-duration: 4s; } }
 @media(max-width:880px) { .mailer-auth { display: block; } .mailer-auth__aside { display: none; } .mailer-auth__main { min-height: 100vh; } }
 @media(max-width:640px) { .live-metrics { grid-template-columns: 1fr; } .live-panel__body { padding: 16px; } .live-environment { font-size: 0; } .live-environment select { font-size: 13px; } .mailer-auth__main { justify-content: flex-start; padding: 24px 16px; } .mailer-auth__card { border-radius: 12px; padding: 26px 20px; } .mailer-auth__card > header { margin-bottom: 24px; } .mailer-auth__card > header h2 { font-size: 23px; } .mailer-auth .form-two { grid-template-columns: 1fr; } .mailer-auth__turnstile { justify-content: flex-start; overflow-x: auto; } }
 

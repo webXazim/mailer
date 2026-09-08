@@ -14,10 +14,22 @@ export function Emails({ environment }: { environment: Environment }) {
 }
 
 export function Domains({ admin, onProductionReady }: { admin: boolean; onProductionReady?: () => void }) {
-  const list = useResource<Domain[]>('/v1/domains'), action = useAction(), [selected, setSelected] = useState<string | null>(null)
+  const cloudflareDomainKey = 'crescentsphere-mailer-cloudflare-domain'
+  const list = useResource<Domain[]>('/v1/domains'), action = useAction()
+  const [cloudflareCallbackDomain] = useState<string | null>(() => {
+    try {
+      const value = window.sessionStorage.getItem(cloudflareDomainKey)
+      window.sessionStorage.removeItem(cloudflareDomainKey)
+      return value
+    } catch { return null }
+  })
+  const [selected, setSelected] = useState<string | null>(cloudflareCallbackDomain)
   const detail = useResource<Domain>(selected ? `/v1/domains/${selected}` : null)
-  const pending = useRef<string[]>([]), checking = useRef(false), [autoError, setAutoError] = useState('')
-  const dnsResult = new URLSearchParams(window.location.hash.split('?')[1] ?? '').get('dns')
+  const pending = useRef<string[]>([]), checking = useRef(false)
+  const [autoError, setAutoError] = useState(''), [autoChecking, setAutoChecking] = useState(false), [lastCheckedAt, setLastCheckedAt] = useState<Date | null>(null), [cloudflareConnecting, setCloudflareConnecting] = useState(false)
+  const currentSearch = new URLSearchParams(window.location.search)
+  const legacySearch = new URLSearchParams(window.location.hash.split('?')[1] ?? '')
+  const dnsResult = currentSearch.get('dns') ?? legacySearch.get('dns')
   pending.current = list.result?.data.filter(domain => domain.status === 'pending').map(domain => domain.id) ?? []
   useEffect(() => {
     if (!selected && pending.current.length > 0) setSelected(pending.current[0])
@@ -27,7 +39,7 @@ export function Domains({ admin, onProductionReady }: { admin: boolean; onProduc
     let cancelled = false
     const verifyPending = async () => {
       if (document.hidden || checking.current || pending.current.length === 0) return
-      checking.current = true; setAutoError('')
+      checking.current = true; setAutoChecking(true); setAutoError('')
       try {
         let productionReady = false
         for (const id of pending.current) {
@@ -35,11 +47,12 @@ export function Domains({ admin, onProductionReady }: { admin: boolean; onProduc
           productionReady ||= result.data.verified
         }
         if (productionReady) onProductionReady?.()
-        if (!cancelled) { list.reload(); if (selected) detail.reload() }
+        if (!cancelled) { setLastCheckedAt(new Date()); list.reload(); if (selected) detail.reload() }
       } catch (error) {
         if (!cancelled) setAutoError(error instanceof Error ? error.message : 'Automatic verification will retry.')
       } finally {
         checking.current = false
+        if (!cancelled) setAutoChecking(false)
       }
     }
     const first = window.setTimeout(() => void verifyPending(), 1500)
@@ -48,11 +61,42 @@ export function Domains({ admin, onProductionReady }: { admin: boolean; onProduc
     document.addEventListener('visibilitychange', visible)
     return () => { cancelled = true; window.clearTimeout(first); window.clearInterval(timer); document.removeEventListener('visibilitychange', visible) }
   }, [admin, selected, list.reload, detail.reload, onProductionReady])
+  const selectedDomain = detail.result?.data
+  const requiredRecords = selectedDomain?.records.filter(record => record.required) ?? []
+  const verifiedRequired = requiredRecords.filter(record => record.status === 'verified').length
+  const propagationPending = selectedDomain?.status === 'pending'
+  const callbackApplies = !cloudflareCallbackDomain || selected === cloudflareCallbackDomain
+  const callbackSucceeded = dnsResult === 'published' && callbackApplies
+  const checkLabel = autoChecking ? 'Checking DNS now…' : lastCheckedAt ? `Last checked ${lastCheckedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : 'First check starting…'
   return <><Panel title="Sending domains" action={<Refresh reload={list.reload} />}><p>Add a domain you control and publish the DNS records at its DNS provider. Pending records are checked automatically. Use MX priority <strong>10</strong>; publish SPF/DMARC as TXT. Never proxy DKIM records in Cloudflare.</p>
-    <ErrorNotice error={autoError} />
+    {!selected && <ErrorNotice error={autoError} />}
     {admin && <form className="live-inline-form" onSubmit={e => { e.preventDefault(); const form = e.currentTarget, domain = String(new FormData(form).get('domain')); action.run(async () => { const value = await api.post<Envelope<Domain>>('/v1/domains', { domain }); form.reset(); list.reload(); setSelected(value.data.id) }) }}><Field label="Domain"><input name="domain" placeholder="mail.example.com" required /></Field><Submit busy={action.busy}>Add domain</Submit></form>}
-    <ErrorNotice error={action.error || list.error} />{list.loading && <p>Loading domains…</p>}<div className="table-wrap"><table className="data-table"><thead><tr><th>Domain</th><th>Status</th><th>Actions</th></tr></thead><tbody>{list.result?.data.map(domain => <tr key={domain.id}><td>{domain.domain}</td><td><Badge value={domain.status} /></td><td className="live-actions"><button className="text-link" onClick={() => setSelected(domain.id)}>DNS records</button>{admin && <><button className="text-link" disabled={action.busy} onClick={() => action.run(async () => { const result = await api.post<Envelope<{ verified: boolean }>>(`/v1/domains/${domain.id}/verify`, {}); if (result.data.verified) onProductionReady?.(); list.reload(); detail.reload() })}>Verify</button>{domain.provider === 'stalwart' && <button className="text-link" disabled={action.busy} onClick={() => { if (confirm(`Rotate DKIM for ${domain.domain}? You must publish the new TXT record before sending resumes.`)) action.run(async () => { await api.post(`/v1/domains/${domain.id}/rotate-dkim`, {}); setSelected(domain.id); list.reload(); detail.reload() }) }}>Rotate DKIM</button>}<button className="text-link" disabled={action.busy} onClick={() => { if (confirm(`Disable ${domain.domain}? Production sends from it will fail.`)) action.run(async () => { await api.delete(`/v1/domains/${domain.id}`); list.reload(); setSelected(null) }) }}>Disable</button></>}</td></tr>)}</tbody></table></div>{!list.loading && !list.result?.data.length && <p>No sending domains. Test sends can use sender@sandbox.mailer.invalid without DNS setup.</p>}</Panel>
-    {selected && <Panel title="DNS setup" action={<button className="text-link" onClick={() => setSelected(null)}>Close</button>}><ErrorNotice error={detail.error} />{dnsResult === 'published' && <p className="live-notice">DNS records were added. Verification will update automatically as they become public.</p>}{dnsResult && dnsResult !== 'published' && <ErrorNotice error={dnsResult === 'cancelled' ? 'Cloudflare authorization was cancelled.' : dnsResult === 'expired' ? 'Cloudflare authorization expired. Start it again.' : 'Cloudflare could not add every record. Existing records were left unchanged; review the DNS table or try again.'} />}{detail.loading && <p>Loading DNS records…</p>}{admin && detail.result?.data.dns_automation.includes('cloudflare') && detail.result.data.status === 'pending' && <div><button className="button button--primary" disabled={action.busy} onClick={() => action.run(async () => { const value = await api.post<Envelope<{ authorizationUrl: string }>>(`/v1/domains/${selected}/dns-automation/cloudflare`, {}); window.location.assign(value.data.authorizationUrl) })}>Add records with Cloudflare</button><p className="muted">Sign in to Cloudflare and authorize DNS access. Mailer uses it once to add these records, then revokes the token.</p></div>}<ErrorNotice error={action.error} /><div className="table-wrap"><table className="data-table"><thead><tr><th>Type</th><th>Name</th><th>Value</th><th>Purpose</th><th>Status</th></tr></thead><tbody>{detail.result?.data.records.map(record => <tr key={record.name}><td>{['SPF', 'DMARC'].includes(record.record_type) ? `TXT (${record.record_type})` : record.record_type}</td><td><code>{record.name}</code></td><td><code>{record.value}</code></td><td>{record.required ? 'Required' : 'Recommended'}</td><td><Badge value={record.status} /></td></tr>)}</tbody></table></div></Panel>}
+    <ErrorNotice error={action.error || list.error} />{list.loading && <p role="status">Loading domains…</p>}<div className="table-wrap"><table className="data-table"><thead><tr><th>Domain</th><th>Status</th><th>Actions</th></tr></thead><tbody>{list.result?.data.map(domain => <tr key={domain.id}><td>{domain.domain}</td><td><Badge value={domain.status} /></td><td className="live-actions"><button className="text-link" onClick={() => setSelected(domain.id)}>DNS records</button>{admin && <><button className="text-link" disabled={action.busy || autoChecking} onClick={() => action.run(async () => { const result = await api.post<Envelope<{ verified: boolean }>>(`/v1/domains/${domain.id}/verify`, {}); if (result.data.verified) onProductionReady?.(); setLastCheckedAt(new Date()); list.reload(); detail.reload() })}>{autoChecking && pending.current.includes(domain.id) ? 'Checking…' : 'Verify'}</button>{domain.provider === 'stalwart' && <button className="text-link" disabled={action.busy || autoChecking} onClick={() => { if (confirm(`Rotate DKIM for ${domain.domain}? You must publish the new TXT record before sending resumes.`)) action.run(async () => { await api.post(`/v1/domains/${domain.id}/rotate-dkim`, {}); setSelected(domain.id); list.reload(); detail.reload() }) }}>Rotate DKIM</button>}<button className="text-link" disabled={action.busy || autoChecking} onClick={() => { if (confirm(`Disable ${domain.domain}? Production sends from it will fail.`)) action.run(async () => { await api.delete(`/v1/domains/${domain.id}`); list.reload(); setSelected(null) }) }}>Disable</button></>}</td></tr>)}</tbody></table></div>{!list.loading && !list.result?.data.length && <p>No sending domains. Test sends can use sender@sandbox.mailer.invalid without DNS setup.</p>}</Panel>
+    {selected && <Panel title="DNS setup" action={<button className="text-link" onClick={() => setSelected(null)}>Close</button>}>
+      <ErrorNotice error={detail.error} />
+      {callbackSucceeded && selectedDomain?.status === 'verified' && <p className="live-notice" role="status">DNS records were added and verified. This domain is ready for production sending.</p>}
+      {callbackApplies && dnsResult && dnsResult !== 'published' && <ErrorNotice error={dnsResult === 'cancelled' ? 'Cloudflare authorization was cancelled.' : dnsResult === 'expired' ? 'Cloudflare authorization expired. Start it again.' : 'Cloudflare could not add every record. Existing records were left unchanged; review the DNS table or try again.'} />}
+      {detail.loading && <p role="status">Loading DNS records…</p>}
+      {propagationPending && <div className="domain-progress" role="status" aria-live="polite" aria-busy="true">
+        <span className="live-spinner" aria-hidden="true" />
+        <div className="domain-progress__body">
+          <strong>{callbackSucceeded ? 'Records added — waiting for DNS propagation' : 'Waiting for DNS records'}</strong>
+          <p>{callbackSucceeded ? 'Cloudflare accepted the records. Mailer is checking them automatically; this usually takes 1–5 minutes and can take longer with DNS caching.' : 'Mailer checks pending records automatically every 15 seconds. Add any missing records, then leave this page open or return later.'}</p>
+          <div className="domain-progress__track" aria-hidden="true"><span /></div>
+          <div className="domain-progress__meta"><span>{verifiedRequired} of {requiredRecords.length} required records verified</span><span>{checkLabel}</span></div>
+        </div>
+      </div>}
+      {admin && selectedDomain?.dns_automation.includes('cloudflare') && selectedDomain.status === 'pending' && <div className="domain-cloudflare-action"><button className="button button--primary" disabled={action.busy || autoChecking} onClick={() => {
+        setCloudflareConnecting(true)
+        void action.run(async () => {
+          try { window.sessionStorage.setItem(cloudflareDomainKey, selected) } catch { /* Session storage can be unavailable. */ }
+          const value = await api.post<Envelope<{ authorizationUrl: string }>>(`/v1/domains/${selected}/dns-automation/cloudflare`, {})
+          window.location.assign(value.data.authorizationUrl)
+        }).finally(() => setCloudflareConnecting(false))
+      }}>{cloudflareConnecting ? <><span className="live-spinner live-spinner--button" aria-hidden="true" />Connecting to Cloudflare…</> : 'Add records with Cloudflare'}</button><p className="muted">Sign in to Cloudflare and authorize DNS access. Adding the records may take a moment; DNS verification usually takes a few minutes. Mailer revokes the temporary token afterward.</p></div>}
+      <ErrorNotice error={action.error || autoError} />
+      <div className="table-wrap"><table className="data-table"><thead><tr><th>Type</th><th>Name</th><th>Value</th><th>Purpose</th><th>Status</th></tr></thead><tbody>{selectedDomain?.records.map(record => <tr key={record.name}><td>{['SPF', 'DMARC'].includes(record.record_type) ? `TXT (${record.record_type})` : record.record_type}</td><td><code>{record.name}</code></td><td><code>{record.value}</code></td><td>{record.required ? 'Required' : 'Recommended'}</td><td><Badge value={record.status} /></td></tr>)}</tbody></table></div>
+    </Panel>}
   </>
 }
 const scopes = ['emails:send', 'emails:read', 'domains:read', 'domains:write', 'webhooks:manage', 'suppressions:manage', 'workspace:read']

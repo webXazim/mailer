@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 pub(crate) struct Client {
-    endpoint: String,
+    endpoints: [String; 2],
     token: String,
 }
 
@@ -32,8 +32,9 @@ pub(crate) struct ProvisionedDomain {
 
 impl Client {
     pub(crate) fn new(base_url: String, token: String) -> Self {
+        let base_url = base_url.trim_end_matches('/');
         Self {
-            endpoint: format!("{}/api", base_url.trim_end_matches('/')),
+            endpoints: [format!("{base_url}/api"), format!("{base_url}/jmap")],
             token,
         }
     }
@@ -271,35 +272,43 @@ impl Client {
             .build();
         let client: HttpClient<_, Full<Bytes>> =
             HttpClient::builder(TokioExecutor::new()).build(connector);
-        let request = Request::builder()
-            .method(Method::POST)
-            .uri(&self.endpoint)
-            .header(header::AUTHORIZATION, format!("Bearer {}", self.token))
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Full::new(Bytes::from(body)))?;
-        let response =
-            tokio::time::timeout(Duration::from_secs(15), client.request(request)).await??;
-        let status = response.status();
-        let bytes = response.into_body().collect().await?.to_bytes();
-        if !status.is_success() {
-            bail!("Stalwart API returned {status}");
+        let body = Bytes::from(body);
+        for endpoint in &self.endpoints {
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri(endpoint)
+                .header(header::AUTHORIZATION, format!("Bearer {}", self.token))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Full::new(body.clone()))?;
+            let response =
+                tokio::time::timeout(Duration::from_secs(15), client.request(request)).await??;
+            let status = response.status();
+            let bytes = response.into_body().collect().await?.to_bytes();
+            if status == axum::http::StatusCode::NOT_FOUND {
+                continue;
+            }
+            if !status.is_success() {
+                bail!("Stalwart API at {endpoint} returned {status}");
+            }
+            let payload: Value = serde_json::from_slice(&bytes)?;
+            let call = payload
+                .get("methodResponses")
+                .and_then(Value::as_array)
+                .and_then(|calls| calls.first())
+                .and_then(Value::as_array)
+                .context("invalid Stalwart JMAP response")?;
+            if call.first().and_then(Value::as_str) == Some("error") {
+                bail!(
+                    "Stalwart JMAP error: {}",
+                    call.get(1).unwrap_or(&Value::Null)
+                );
+            }
+            return call
+                .get(1)
+                .cloned()
+                .context("Stalwart JMAP response omitted arguments");
         }
-        let payload: Value = serde_json::from_slice(&bytes)?;
-        let call = payload
-            .get("methodResponses")
-            .and_then(Value::as_array)
-            .and_then(|calls| calls.first())
-            .and_then(Value::as_array)
-            .context("invalid Stalwart JMAP response")?;
-        if call.first().and_then(Value::as_str) == Some("error") {
-            bail!(
-                "Stalwart JMAP error: {}",
-                call.get(1).unwrap_or(&Value::Null)
-            );
-        }
-        call.get(1)
-            .cloned()
-            .context("Stalwart JMAP response omitted arguments")
+        bail!("Stalwart management JMAP endpoints /api and /jmap both returned 404")
     }
 }
 

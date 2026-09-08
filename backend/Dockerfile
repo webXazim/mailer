@@ -3,6 +3,13 @@ FROM rust:1.97-bookworm AS build
 WORKDIR /src
 ARG CARGO_BUILD_JOBS=1
 COPY . .
+# SQLx identifies migrations by their numeric prefix. Fail the build before a
+# duplicate number can reach production and collide with an applied migration.
+RUN duplicates="$(find migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' \
+        | cut -d_ -f1 | sort | uniq -d)" \
+    && if [ -n "$duplicates" ]; then \
+        echo "duplicate migration version(s): $duplicates" >&2; exit 1; \
+    fi
 # sqlx::migrate! embeds migrations in cs-mail-db at compile time. The persistent
 # target cache can otherwise reuse that crate after only a migration file changes.
 RUN touch crates/db/src/lib.rs

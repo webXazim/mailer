@@ -64,8 +64,8 @@ pub(crate) struct AppState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // AWS SDK and Turnstile HTTPS enable different rustls providers. Select one
-    // explicitly before either client is constructed to prevent request panics.
+    // S3-compatible storage and Turnstile HTTPS enable different rustls providers.
+    // Select one explicitly before either client is constructed to prevent panics.
     let _ = rustls::crypto::ring::default_provider().install_default();
     let settings = Settings::from_env()?;
     tracing_subscriber::registry()

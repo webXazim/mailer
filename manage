@@ -114,7 +114,11 @@ case "$command" in
         sh backend/deploy/preflight.sh
         # Build before replacing running containers. Limit concurrent build work.
         COMPOSE_PARALLEL_LIMIT=1 production_compose build api worker frontend
-        production_compose up -d --no-build --wait --wait-timeout 180
+        if ! production_compose up -d --no-build --wait --wait-timeout 180; then
+            echo 'Deployment did not become healthy. Recent API/database/queue logs:' >&2
+            production_compose logs --tail 100 api postgres nats >&2 || true
+            exit 1
+        fi
         # cloudflared's minimal image has no shell/curl; probe from nginx.
         if ! production_compose exec -T frontend sh -c '
             attempt=0

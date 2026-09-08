@@ -14,9 +14,7 @@ if sh manage production-init >/dev/null 2>&1; then
     echo 'Initialization overwrote .env' >&2; exit 1
 fi
 test "$before" = "$(sha256sum .env)"
-sed -i '/^DELIVERY_PROVIDER=/d' .env
 sh manage production-env-upgrade
-test "$(grep -c '^DELIVERY_PROVIDER=ses$' .env)" = 1
 test "$(stat -c '%a' .env)" = 600
 set -a
 . ./.env
@@ -24,16 +22,22 @@ set +a
 test "${#POSTGRES_PASSWORD}" = 64
 test "${#NATS_PASSWORD}" = 64
 test "$POSTGRES_PASSWORD" != "$NATS_PASSWORD"
-test "$EVENT_INGEST_TOKEN" != "$WEBHOOK_SIGNING_MASTER_KEY"
 if sh manage preflight >failure.log 2>&1; then exit 1; fi
 grep -q 'CLOUDFLARE_TUNNEL_TOKEN is required' failure.log
 
-for name in CLOUDFLARE_TUNNEL_TOKEN API_AWS_ACCESS_KEY_ID API_AWS_SECRET_ACCESS_KEY WORKER_AWS_ACCESS_KEY_ID WORKER_AWS_SECRET_ACCESS_KEY SES_EVENTS_QUEUE_URL SES_EVENTS_TOPIC_ARN SES_CONFIGURATION_SET OBJECT_STORAGE_ENDPOINT OBJECT_STORAGE_BUCKET OBJECT_STORAGE_ACCESS_KEY_ID OBJECT_STORAGE_SECRET_ACCESS_KEY; do
+for name in CLOUDFLARE_TUNNEL_TOKEN OBJECT_STORAGE_ENDPOINT OBJECT_STORAGE_BUCKET OBJECT_STORAGE_ACCESS_KEY_ID OBJECT_STORAGE_SECRET_ACCESS_KEY; do
     sed -i "s/^$name=\$/$name=test-credential/" .env
 done
 sed -i 's/^TURNSTILE_SITE_KEY=$/TURNSTILE_SITE_KEY=test-site-key/' .env
 sed -i 's/^TURNSTILE_SECRET_KEY=$/TURNSTILE_SECRET_KEY=test-secret-key-that-is-long-enough/' .env
 sed -i 's/^ACCOUNT_EMAIL_API_KEY=$/ACCOUNT_EMAIL_API_KEY=cs_live_test-account-email-key/' .env
+sed -i 's|^STALWART_API_URL=$|STALWART_API_URL=http://stalwart:8080|' .env
+sed -i 's/^STALWART_API_TOKEN=$/STALWART_API_TOKEN=0123456789abcdef0123456789abcdef/' .env
+sed -i 's/^SMTP_HOST=$/SMTP_HOST=smtp.example.test/' .env
+sed -i 's/^SMTP_USERNAME=$/SMTP_USERNAME=mailer-worker/' .env
+sed -i 's/^SMTP_PASSWORD=$/SMTP_PASSWORD=test-smtp-password/' .env
+sed -i 's/^STALWART_WEBHOOK_TOKEN=$/STALWART_WEBHOOK_TOKEN=0123456789abcdef0123456789abcdef/' .env
+sed -i 's/^STALWART_WEBHOOK_SIGNING_KEY=$/STALWART_WEBHOOK_SIGNING_KEY=fedcba9876543210fedcba9876543210/' .env
 # The shim verifies command sequencing without contacting Docker or providers.
 cat >bin/docker <<'EOF'
 #!/bin/sh
@@ -59,36 +63,12 @@ chmod 644 .env
 if sh manage preflight >/dev/null 2>&1; then exit 1; fi
 chmod 600 .env
 cp .env valid.env
-sed -i 's/^DELIVERY_PROVIDER=ses$/DELIVERY_PROVIDER=smtp/' .env
-sed -i 's/^SMTP_HOST=$/SMTP_HOST=smtp.example.test/' .env
-sed -i 's/^SMTP_USERNAME=$/SMTP_USERNAME=mailer-worker/' .env
-sed -i 's/^SMTP_PASSWORD=$/SMTP_PASSWORD=test-smtp-password/' .env
-sed -i 's/^STALWART_WEBHOOK_TOKEN=$/STALWART_WEBHOOK_TOKEN=0123456789abcdef0123456789abcdef/' .env
-sed -i 's/^STALWART_WEBHOOK_SIGNING_KEY=$/STALWART_WEBHOOK_SIGNING_KEY=fedcba9876543210fedcba9876543210/' .env
-sed -i 's/^WORKER_AWS_ACCESS_KEY_ID=.*/WORKER_AWS_ACCESS_KEY_ID=/' .env
-sed -i 's/^WORKER_AWS_SECRET_ACCESS_KEY=.*/WORKER_AWS_SECRET_ACCESS_KEY=/' .env
-sed -i 's/^SES_EVENTS_QUEUE_URL=.*/SES_EVENTS_QUEUE_URL=/' .env
-sed -i 's/^SES_EVENTS_TOPIC_ARN=.*/SES_EVENTS_TOPIC_ARN=/' .env
-sed -i 's/^SES_CONFIGURATION_SET=.*/SES_CONFIGURATION_SET=/' .env
-sh manage preflight
 sed -i 's/^SMTP_SECURITY=implicit_tls$/SMTP_SECURITY=plaintext/' .env
 if sh manage preflight >/dev/null 2>&1; then exit 1; fi
-cp valid.env .env
-sed -i 's/^DOMAIN_PROVIDER=ses$/DOMAIN_PROVIDER=stalwart/' .env
-sed -i 's|^STALWART_API_URL=$|STALWART_API_URL=http://stalwart:8080|' .env
-sed -i 's/^STALWART_API_TOKEN=$/STALWART_API_TOKEN=0123456789abcdef0123456789abcdef/' .env
-sh manage preflight
 cp valid.env .env
 sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=unsafe-password-with-special-char@/' .env
 if sh manage preflight >/dev/null 2>&1; then exit 1; fi
 cp valid.env .env
-
-# Mixed-provider production keeps both credential sets ready for an online switch.
-sed -i 's/^SMTP_HOST=$/SMTP_HOST=smtp.example.test/' .env
-sed -i 's/^SMTP_USERNAME=$/SMTP_USERNAME=mailer-worker/' .env
-sed -i 's/^SMTP_PASSWORD=$/SMTP_PASSWORD=test-smtp-password/' .env
-sed -i 's/^STALWART_WEBHOOK_TOKEN=$/STALWART_WEBHOOK_TOKEN=0123456789abcdef0123456789abcdef/' .env
-sed -i 's/^STALWART_WEBHOOK_SIGNING_KEY=$/STALWART_WEBHOOK_SIGNING_KEY=fedcba9876543210fedcba9876543210/' .env
 
 : >docker-calls.log
 if FAIL_BUILD=1 sh manage deploy >/dev/null 2>&1; then exit 1; fi
@@ -104,22 +84,14 @@ if grep -q 'down\|prune\|--volumes' docker-calls.log; then exit 1; fi
 sh manage smtp-pause
 sh manage smtp-resume
 sh manage smtp-cap 25
-sh manage default-provider smtp
-sh manage default-provider ses
-sh manage default-provider environment
-sh manage ses-rollback enable
-sh manage route-workspace 11111111-1111-4111-8111-111111111111 smtp
-sh manage route-workspace 11111111-1111-4111-8111-111111111111 default
 sh manage delivery-routing-status
 sh manage delivery-report 7
 sh manage pause-workspace 11111111-1111-4111-8111-111111111111
 sh manage resume-workspace 11111111-1111-4111-8111-111111111111
 sh manage security-events 7
 if sh manage smtp-cap invalid >/dev/null 2>&1; then exit 1; fi
-if sh manage default-provider invalid >/dev/null 2>&1; then exit 1; fi
 if sh manage pause-workspace invalid >/dev/null 2>&1; then exit 1; fi
 grep -q 'delivery_operator_controls' docker-calls.log
-grep -q 'workspace_delivery_routes' docker-calls.log
 grep -q 'security.workspace_paused' docker-calls.log
 grep -q 'security.workspace_resumed' docker-calls.log
 echo 'Environment initialization, validation and deployment sequencing passed.'

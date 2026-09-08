@@ -11,9 +11,7 @@ if [ -z "$failure" ] && { [ -z "$disk_used" ] || [ "$disk_used" -ge "${DISK_ALER
     failure="filesystem usage is ${disk_used:-unknown}%"
 fi
 
-# Both providers can be configured while the database selects the runtime route.
-# Verify SMTP whenever it is available for routing, even if DELIVERY_PROVIDER is
-# still the environment fallback for SES.
+# Verify the independent SMTP transport and its certificate.
 if [ -z "$failure" ] && [ -n "${SMTP_HOST:-}" ]; then
     certificate=$(mktemp)
     trap 'rm -f "$certificate"' EXIT HUP INT TERM

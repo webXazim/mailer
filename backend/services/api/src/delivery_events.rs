@@ -1,21 +1,18 @@
 use super::AppState;
 use axum::{
-    extract::State,
-    http::{header, HeaderMap, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
-    routing::post,
-    Json, Router,
+    Json,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use sqlx::Row;
 use uuid::Uuid;
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SesEvent {
+pub(crate) struct DeliveryEvent {
     pub(crate) event_id: String,
     pub(crate) message_id: String,
     pub(crate) event_type: String,
@@ -27,28 +24,9 @@ pub(crate) struct SesEvent {
     pub(crate) details: serde_json::Value,
 }
 
-pub fn routes() -> Router<AppState> {
-    Router::new().route("/internal/v1/ses/events", post(ingest))
-}
-
-async fn ingest(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(event): Json<SesEvent>,
-) -> Response {
-    if !authorized(&headers, &state.event_ingest_token) {
-        return error(
-            StatusCode::UNAUTHORIZED,
-            "invalid_event_token",
-            "Event authentication failed",
-        );
-    }
-    ingest_event(&state, event, "ses", None).await
-}
-
 pub(crate) async fn ingest_event(
     state: &AppState,
-    event: SesEvent,
+    event: DeliveryEvent,
     provider: &str,
     correlation: Option<(Uuid, Option<Uuid>)>,
 ) -> Response {
@@ -122,17 +100,6 @@ pub(crate) async fn ingest_event(
     let email = match email_result {
         Ok(Some(value)) => value,
         Ok(None) => {
-            let account: bool = provider == "ses"
-                && sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM account_emails WHERE provider_message_id=$1)",
-                )
-                .bind(&event.message_id)
-                .fetch_one(&mut *tx)
-                .await
-                .unwrap_or(false);
-            if account {
-                return Json(json!({"data":{"accepted":true,"accountEmail":true}})).into_response();
-            }
             return error(
                 StatusCode::NOT_FOUND,
                 "email_not_found",
@@ -172,11 +139,7 @@ pub(crate) async fn ingest_event(
     payload["provider"] = json!(provider);
     let mut inserted = 0_u64;
     for recipient in recipients {
-        let base_event_id = if provider == "ses" {
-            event.event_id.clone()
-        } else {
-            format!("{provider}:{}", event.event_id)
-        };
+        let base_event_id = format!("{provider}:{}", event.event_id);
         let provider_event_id = recipient.as_ref().map_or_else(
             || base_event_id.clone(),
             |address| format!("{base_event_id}:{address}"),
@@ -333,32 +296,12 @@ fn normalized_recipients(recipients: &[String]) -> Option<Vec<Option<String>>> {
     }
     Some(normalized)
 }
-fn should_suppress(event: &SesEvent) -> bool {
+fn should_suppress(event: &DeliveryEvent) -> bool {
     event.event_type == "complaint"
         || (event.event_type == "bounce"
             && event.bounce_type.as_deref().is_some_and(|value| {
                 matches!(value.to_ascii_lowercase().as_str(), "permanent" | "hard")
             }))
-}
-fn authorized(headers: &HeaderMap, expected: &str) -> bool {
-    let Some(actual) = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-    else {
-        return false;
-    };
-    constant_time_eq(actual.trim().as_bytes(), expected.as_bytes())
-}
-
-fn constant_time_eq(actual: &[u8], expected: &[u8]) -> bool {
-    let actual_hash = Sha256::digest(actual);
-    let expected_hash = Sha256::digest(expected);
-    let mut difference = 0_u8;
-    for (left, right) in actual_hash.iter().zip(expected_hash.iter()) {
-        difference |= left ^ right;
-    }
-    difference == 0
 }
 fn error(status: StatusCode, code: &str, message: &str) -> Response {
     (status, Json(json!({"code": code, "message": message}))).into_response()
@@ -366,12 +309,12 @@ fn error(status: StatusCode, code: &str, message: &str) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{aggregate_status, normalized_recipients, should_suppress, SesEvent};
+    use super::{aggregate_status, normalized_recipients, should_suppress, DeliveryEvent};
     use chrono::Utc;
     use serde_json::json;
 
-    fn event(event_type: &str, bounce_type: Option<&str>) -> SesEvent {
-        SesEvent {
+    fn event(event_type: &str, bounce_type: Option<&str>) -> DeliveryEvent {
+        DeliveryEvent {
             event_id: "evt_1".into(),
             message_id: "msg_1".into(),
             event_type: event_type.into(),

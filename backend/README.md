@@ -1,337 +1,103 @@
-# CrescentSphere Mailer Backend
+# CrescentSphere Mailer backend
 
-Rust services for the standalone transactional developer email platform.
-Hosted mailbox protocols and mailbox storage are intentionally out of scope.
+Rust workspace for the Axum API and asynchronous delivery worker. Production
+mail is submitted only to the independently operated Stalwart SMTP service.
 
 ## Services
 
-- `cs-mail-api`: Axum HTTP API, health endpoints, and request tracing.
-- `cs-mail-worker`: asynchronous delivery and event processing host.
-- PostgreSQL: authoritative application state.
-- NATS JetStream: durable jobs and events, never the source of truth.
+- `cs-mail-api` owns authentication, API keys, domain onboarding, email
+  admission, activity, suppressions, and customer webhooks.
+- `cs-mail-worker` consumes JetStream jobs, builds MIME messages, submits them
+  over authenticated TLS SMTP, processes lifecycle jobs, and dispatches
+  webhooks.
+- PostgreSQL is the durable source of truth. NATS JetStream is the work signal;
+  the transactional outbox prevents accepted jobs from being lost.
+- Email content and attachments use the configured S3-compatible object store.
 
-## Local development
+## Independent mail transport
 
-Requirements: Rust stable and Docker with Compose.
+Configure these values together:
 
-```bash
-cp .env.example .env
-sh manage dev
-```
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USERNAME`, `SMTP_PASSWORD`
+- `SMTP_HELO_NAME` and `SMTP_TIMEOUT_SECONDS`
+- `STALWART_API_URL` and `STALWART_API_TOKEN`
+- `MTA_PUBLIC_HOST`, `MTA_PUBLIC_IPV4`, `MTA_RETURN_PATH_PREFIX`
+- `STALWART_WEBHOOK_TOKEN` and `STALWART_WEBHOOK_SIGNING_KEY`
 
-The API listens on `http://localhost:8080`. Liveness is available at
-`GET /healthz`. `GET /readyz` checks PostgreSQL and NATS with bounded timeouts.
-Database migrations run automatically when the API starts.
+Use `implicit_tls` on port 465 or `starttls` on port 587. Plaintext SMTP is not
+supported. The Stalwart management URL should be private; its API credential
+needs only the domain and DKIM permissions described in
+`STALWART_DOMAIN_PROVISIONING.md`.
 
-Authentication endpoints are available under `/v1/auth`: signup, login, logout,
-session lookup, and password reset request/completion. Sessions are opaque,
-random tokens stored only as SHA-256 hashes in PostgreSQL and delivered through
-HttpOnly, SameSite cookies. Production uses a `__Host-` cookie with `Secure`;
-local development uses a non-secure cookie for `http://localhost`.
+Domain onboarding provisions a Stalwart domain and DKIM signature, then returns
+the DNS records for the platform's own host and IPv4 address:
 
-API key management is available under `/v1/api-keys`. Secrets are shown only
-on creation or rotation, stored as hashes, scoped to a workspace, and can be
-revoked or expired. The verifier enforces workspace ownership, permission scope, and the email environment. Rotation is transactional; revocation errors never return success.
+- DKIM TXT under `<selector>._domainkey.<sending-domain>`
+- MX and SPF for `<return-path-prefix>.<sending-domain>`
+- DMARC TXT under `_dmarc.<sending-domain>`
+- CrescentSphere ownership TXT under `_mailer-verification.<sending-domain>`
 
-Domain onboarding is available under `/v1/domains`. `DOMAIN_PROVIDER` selects
-`ses` or `stalwart` in production. SES keeps its provider identity flow.
-Stalwart uses its authenticated JMAP management API to create or adopt a domain
-and a unique RSA DKIM key, then returns provider-neutral DKIM, return-path SPF/MX,
-DMARC, and random ownership TXT records. Manual publication works at every DNS
-provider; Cloudflare OAuth is only an optional shortcut. The API checks pending
-records every 30 seconds. DKIM rotation keeps the previous key active until the
-replacement TXT is public, and disabling a Stalwart domain disables it at the MTA.
+The background verifier checks required DNS records before enabling production
+sending. DKIM rotation keeps the previous signature until the replacement TXT
+record verifies.
 
-The developer submission endpoint is `POST /v1/emails`. It requires an API
-key with `emails:send` (or an owner/admin console session), a matching test/production environment, and an
-`Idempotency-Key` header. The API validates the verified sender domain and
-suppressions, then atomically stores the email, recipients, idempotency result,
-and transactional outbox event before returning `202 Accepted`.
+Stalwart sends signed event batches to `POST /internal/v1/stalwart/events`.
+Requests require both the bearer token and the base64 HMAC-SHA256 signature of
+the exact request body. Keep this route private; the production Nginx proxy
+blocks `/internal` from public access.
 
-The worker publishes outbox events to a durable `MAILER_DELIVERY` JetStream
-stream and consumes them with explicit acknowledgements, bounded retries, and
-a `MAILER_DLQ` stream. Test-environment jobs are simulated locally; production
-jobs use the provider stored when the API accepts them. `DELIVERY_PROVIDER=ses`
-uses SES, while `DELIVERY_PROVIDER=smtp` uses authenticated TLS submission to
-Stalwart or another SMTP relay. A provider timeout after it may have accepted a message is
-treated as ambiguous: the email is quarantined for manual review after the
-provider result is uncertain instead of being silently resent. Typed throttling errors retry with backoff; automatic SDK retries are disabled for sending. Shutdown drains bounded in-flight work; maintenance reconciles stale claims and expired queues.
+## Delivery safety
 
-Operators may override the environment default at runtime with
-`sh manage default-provider ses|smtp|environment`. Workspace routes take
-precedence. The route is resolved and stored in the admission transaction, so
-a runtime switch affects only newly accepted messages.
+Production admission checks workspace status, a verified sender domain,
+suppression state, monthly usage, concurrency, SMTP pause state, and the daily
+SMTP cap. Each real provider call creates an append-only
+`delivery_provider_attempts` row before network I/O. Ambiguous transport results
+are never retried automatically because the remote MTA may already have
+accepted the message.
 
-SES delivery, bounce, complaint, reject, rendering-failure, open, and click
-events are consumed from SQS through an SNS subscription. The worker verifies
-the SNS topic, certificate URL, X.509 certificate, and RSA signature before
-normalizing the SES notification and forwarding it to
-`POST /internal/v1/ses/events`. The endpoint requires `EVENT_INGEST_TOKEN` and
-is a replay-safe processor boundary: events are deduplicated, recipient and
-aggregate states are monotonic, permanent bounces and complaints create
-suppressions, delivered usage is counted once, and webhook work is written to
-the outbox in the same transaction. Invalid SQS messages are left for the
-queue's redrive policy and dead-letter queue.
+Test keys use `sender@sandbox.mailer.invalid` and never contact SMTP. Simulator
+recipients include `bounce@simulator.mailer.invalid` and
+`complaint@simulator.mailer.invalid`.
 
-Stalwart sends HMAC-SHA256-signed, bearer-authenticated event batches to
-`POST /internal/v1/stalwart/events`. The adapter correlates the Mailer-controlled
-message and attempt UUIDs, records queued and deferred activity without claiming
-delivery, and marks delivery only from `delivery.delivered`. Duplicate and
-out-of-order events are safe, and multi-recipient messages complete only when all
-recipient states are terminal. Configure it with `STALWART_WEBHOOK_TOKEN` and
-`STALWART_WEBHOOK_SIGNING_KEY`; see `STALWART_EVENT_INGESTION.md`.
-
-Customer webhook endpoints are managed under `/v1/webhooks`. Endpoint secrets
-are displayed only on creation or rotation and are derived from the stable
-`WEBHOOK_SIGNING_MASTER_KEY`; PostgreSQL stores only their hashes. Delivery
-rows and attempt history remain authoritative in PostgreSQL, while the worker
-dispatches due attempts through the `MAILER_WEBHOOKS` JetStream stream. Calls
-require HTTPS, reject private and link-local destinations during connection
-resolution, time out after ten seconds, retry transient responses up to eight
-times, and move terminal failures into `webhook_dead_letters`. Endpoints are
-disabled after twenty consecutive terminal delivery failures.
-
-Webhook requests contain `webhook-id`, `webhook-timestamp`, and
-`webhook-signature` headers. The signature is `v1,` followed by URL-safe base64
-HMAC-SHA256 over `<webhook-id>.<webhook-timestamp>.<raw-body>` using the
-endpoint secret. Consumers should reject stale timestamps before comparing the
-signature in constant time.
-
-Start only the backend services from the `mailer/` root:
+Operator controls:
 
 ```bash
-docker compose up --build api worker postgres nats
+sh manage smtp-pause
+sh manage smtp-resume
+sh manage smtp-cap 1000
+sh manage delivery-routing-status
+sh manage delivery-report 7
 ```
 
-With the React app in `frontend/` running on `http://localhost:5173`, keep
-`VITE_API_URL=http://localhost:8080` so requests use the API's `/v1` prefix.
+## Object storage
+
+`OBJECT_STORAGE_PROVIDER` may be `disabled`, `r2`, or `s3`; both enabled modes
+use the S3-compatible protocol. Configure the endpoint, bucket, region, access
+key, secret, and timeout together. Production requires durable object storage.
 
 ## Verification
 
-```bash
-sh manage check
-```
-
-## Production Configuration
-
-Use [`../.env.production.example`](../.env.production.example). All credentials
-are grouped first; generated local secrets stay stable between deployments.
-See the [root VPS guide](../README.md#vps-deployment-testing-then-production) for
-initial setup and the Cloudflare route. From the repository root:
+From the repository root:
 
 ```bash
-sh manage deploy
+sh manage backend-fmt
+sh manage backend-lint
+sh manage backend-test
+sh manage compose-config
 ```
 
-This validates configuration, builds the API/worker/frontend on the VPS and
-starts the standalone production Compose stack. Production no longer requires
-CI-published images, Caddy or a separate API hostname. Do not merge the production
-file with the development Compose file. The API base is
-`https://mailer.crescentsphere.com/api`.
+The isolated Docker regression suites are under `backend/deploy/tests`. They use
+disposable Compose projects and never read the real `.env` file.
 
-### AWS
+## Deployment
 
-Use `ap-southeast-1` for SES, SNS, and SQS. On a VPS, create a dedicated IAM user
-for this deployment; never use the AWS root account. Its policy should allow
-only the SES identity/send operations used by the API and worker, plus
-`sqs:ReceiveMessage`, `sqs:DeleteMessage`, `sqs:ChangeMessageVisibility`, and
-`sqs:GetQueueAttributes` for the single event queue.
+Use `sh manage production-init`, complete `.env`, start the independent Stalwart
+stack, and run `sh manage deploy`. Production validation requires authenticated
+NATS, HTTPS console origin, Turnstile, Stalwart/SMTP credentials, signed event
+credentials, abuse limits, and durable object storage.
 
-Create one SNS topic and one standard SQS queue with a redrive policy to a
-separate DLQ. Subscribe the queue to the topic with raw message delivery
-disabled, permit only that topic to call `sqs:SendMessage`, and configure the
-SES configuration set to publish delivery, bounce, complaint, reject,
-rendering-failure, open, and click events to the topic. Enter the final queue
-URL and exact topic ARN as `SES_EVENTS_QUEUE_URL` and `SES_EVENTS_TOPIC_ARN`. Set
-`SES_CONFIGURATION_SET` to this configuration-set name and ensure the worker IAM policy
-includes its ARN. For account email, create a production Mailer key with only
-`emails:send`, set it as `ACCOUNT_EMAIL_API_KEY`, set `ACCOUNT_EMAIL_FROM` to an address
-under a verified domain, and enable `AUTH_EMAIL_DELIVERY_ENABLED`. The worker submits
-verification and password-reset email to the internal Mailer API; normal delivery and
-provider event processing then applies. Account messages are multipart text and
-responsive HTML, and queued sensitive content is erased after submission or a
-terminal failure.
-
-Provide the `API_AWS_*` and `WORKER_AWS_*` credentials only through the VPS
-secret environment. Use separate IAM users: the API identity manages SES
-domains, while the worker identity sends through SES and consumes the event
-queue. If this later runs on AWS compute, use separate IAM roles and leave
-static access-key variables empty.
-
-### Outbound delivery provider
-
-Use `DELIVERY_PROVIDER=ses` until the Stalwart acceptance and event-ingestion
-gates are complete. To make Stalwart the boot-time fallback, set `DELIVERY_PROVIDER=smtp`,
-`SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and
-`SMTP_HELO_NAME`. Only implicit TLS and required STARTTLS are accepted. The worker
-uses the same MIME builder for both providers, omits Bcc from headers, and sends
-Bcc recipients only in the SMTP envelope.
-
-The selected provider is written to each email before it enters the queue. Each
-real provider call creates an append-only `delivery_provider_attempts` row with a
-Mailer correlation UUID and the returned provider queue ID. An SMTP `250` response
-means Stalwart queued the message; it does not prove recipient delivery. Keep SES
-events enabled for SES-routed messages while those attempts remain in flight.
-When changing an existing deployment, keep all worker SES/event variables set until
-previously accepted SES messages have drained; otherwise clear the complete group.
-For an online switch with both providers configured, use
-`sh manage default-provider smtp` or `sh manage default-provider ses` instead.
-
-### S3-compatible object storage
-
-Create a private bucket and credentials restricted to object read and write for
-that bucket. Cloudflare R2 and the independently deployed Garage stack are both
-supported through the same S3-compatible settings. Set the endpoint, region,
-bucket, access key, and secret in the object-storage variables. Production requires object storage: the API writes
-immutable message-content objects before making delivery work visible, and the
-worker verifies each object's SHA-256 checksum before sending. Local
-development can keep `OBJECT_STORAGE_PROVIDER=disabled` and store content in
-PostgreSQL.
-
-The send API accepts up to 10 base64 attachments, limited to 10 MB each and
-20 MB decoded in total so the encoded MIME message remains within SES limits.
-Attachments, inline content, HTML, and text are stored together in one
-immutable message object. The worker generates multipart MIME and passes it to
-the selected provider. Terminal message objects are retained for
-`EMAIL_CONTENT_RETENTION_DAYS`, then deleted only while PostgreSQL still marks
-the email completed.
-
-### Secrets
-
-Generate the event token, webhook master key, and database password
-independently. For example:
-
-```bash
-openssl rand -base64 48
-```
-
-Changing `WEBHOOK_SIGNING_MASTER_KEY` invalidates every existing customer
-webhook secret. Back it up securely and rotate individual endpoints through
-the API instead of replacing the master key during ordinary deployments.
-
-### Abuse Limits
-
-Email admission is serialized per workspace and enforced transactionally in
-PostgreSQL. Defaults are configured with `API_KEY_RATE_LIMIT_PER_MINUTE`,
-`CLIENT_IP_RATE_LIMIT_PER_MINUTE`, `WORKSPACE_MONTHLY_EMAIL_LIMIT`, and
-`WORKSPACE_CONCURRENT_EMAIL_LIMIT`. Paid-plan overrides can be written to
-`workspace_limits` without restarting services. The production reverse proxy
-connects over loopback in the API network namespace and sets `X-Real-IP`; forwarded IP headers are
-ignored for non-loopback peers. Old minute buckets are removed hourly.
-
-### Public-launch security gates
-
-The API applies a 36 MB request body cap, a 30-second request deadline, strict
-security response headers, exact-origin CORS, opaque HttpOnly session cookies,
-and PostgreSQL-backed per-IP/API-key/workspace admission limits. Login attempts
-are bucketed by both source IP and normalized email and return a generic failure
-for unknown users or incorrect passwords; password-reset requests are always
-accepted without revealing whether an account exists.
-
-Keep `/internal/v1/ses/events` and `/internal/v1/stalwart/events` private to the
-worker/VPS networks in the reverse proxy. They still require independent bearer
-credentials, and the Stalwart endpoint additionally requires a valid body HMAC;
-neither endpoint may be internet-facing.
-Terminate TLS at the reverse proxy, enable HSTS there, and set only
-`X-Real-IP` from that trusted loopback proxy. Never set `TRUST_PROXY_HEADERS=true`
-when the API is directly exposed to the public network. Keep PostgreSQL, NATS,
-and object storage private, rotate credentials independently, and rehearse database and
-JetStream restoration before accepting customer traffic.
-
-### VPS deployment and recovery
-
-Follow the root VPS guide for deployment. `backend/deploy/Caddyfile` is a legacy
-reference and is not used by the Cloudflare deployment. Production Compose uses
-private networks, authenticated NATS, bounded logs/PIDs/resources, and unprivileged
-read-only application containers. `sh manage preflight` checks credentials and
-Compose without displaying secrets; it does not verify live provider permissions.
-
-For offsite backups, install Bash, `age`, `rclone`, and `curl` on the VPS. Configure the
-backup/alert values near the top of `.env` (mode `0600`). Install the units and
-timers under `backend/deploy/systemd/` after reviewing their paths, then enable
-the backup and health timers. The default checkout is `/opt/crescentsphere-mailer`.
-
-The backup job creates an encrypted PostgreSQL custom dump, uploads it to the
-configured immutable rclone remote, and prunes only local files older than the
-retention period. Before launch and after every migration, run
-`sh manage restore-rehearsal` against its fixed disposable database. Install a
-compatible PostgreSQL client for its host-side `pg_restore --list` check. Keep
-the age private identity offline from routine backup jobs; only restore needs it.
-Never point the rehearsal at the live database or use it as a live rollback.
-
-PostgreSQL backups do not cover NATS JetStream. When `BACKUP_OBJECT_STORAGE=true`,
-the backup job copies immutable object keys to the configured rclone remote; test
-restoring those objects and establish a separate NATS recovery strategy before
-accepting customers.
-Changing the PostgreSQL password in `.env` alone does not change an existing
-volume's database password. Coordinate database credential changes explicitly.
-Changing the webhook master key invalidates existing customer webhook secrets.
-
-AWS policy starting points are under `backend/deploy/aws/`; replace account and
-configuration-set placeholders and review the effective permissions in AWS.
-
-
-## API contract
-
-- `POST /v1/auth/signup` accepts `email`, `password`, `first_name`, `last_name`, and
-  `turnstile_token`. Production validates Turnstile server-side. With account email delivery
-  disabled it creates a session immediately; when enabled it queues a one-time verification
-  link. The workspace name is created automatically.
-- New workspaces can create test keys and simulate delivery. Verifying a sending domain
-  automatically unlocks production API keys and submissions for that workspace.
-- `GET /v1/emails?limit=25&offset=0&environment=test` lists messages. Keys only see
-  their environment; a console session can select either. `GET /v1/emails/{id}` returns
-  status, recipients, up to 100 latest events, metadata, and retained body content.
-- `POST /v1/emails` supports `from`, `to`, `cc`, `bcc`, `subject`, `text`, `html`,
-  `reply_to`, `metadata`, `attachments`, and optional `environment` (inferred from the key).
-  The total To/CC/BCC limit is 50. Nonempty `headers` or `tags` are explicitly rejected.
-  Idempotency is scoped to workspace **and environment**; retry identical requests
-  with the same key. Keys are retained without automatic expiry in this release.
-- Test sends may use `sender@sandbox.mailer.invalid`. They generate persisted delivery
-  events and webhooks without calling SES. Use `bounce@simulator.mailer.invalid` or
-  `complaint@simulator.mailer.invalid` to test suppression. Suppressions are workspace-wide.
-- `GET/POST /v1/suppressions` and `DELETE /v1/suppressions/{id}` require owner/admin or
-  `suppressions:manage`; POST accepts `{ "address": "recipient@example.com" }`.
-- Domain management accepts `domains:read`/`domains:write`; webhook management accepts
-  `webhooks:manage`; workspace details accept `workspace:read`. Control-plane permissions
-  manage shared workspace resources regardless of a key's sending environment.
-- Creating a webhook requires `{ "url": "https://hooks.example.com/events",
-  "environment": "test", "subscriptions": ["email.delivery"] }`. Its environment is
-  fixed; recreate to change it. Literal IP addresses, local names, and private DNS
-  destinations are blocked. Existing endpoints migrate to `production`.
-- Webhook payload `{id,type,createdAt,data}` includes `data.emailId`, `data.environment`,
-  and `data.metadata`. `type` matches subscriptions (`email.delivery`, `email.bounce`, etc.).
-  The signature uses the **complete whsec_ secret as UTF-8**, not a decoded key;
-  output is unpadded base64url. Check timestamps and deduplicate webhook-id. Retries
-  may duplicate delivery; email API idempotency does not make webhook handling exactly once.
-
-The monthly limit counts accepted message submissions, including test messages, not
-recipients/provider billing units. Concurrency/rate limits are additional safeguards.
-SES account quotas and reputation need independent monitoring. Templates, custom headers,
-tags, billing, MFA, and team administration are deferred.
-
-## Recovery and retention
-
-Password-reset requests enqueue expiring messages in `account_emails`. The worker submits
-them through Mailer's internal API using `ACCOUNT_EMAIL_API_KEY` and
-`ACCOUNT_EMAIL_FROM`, clears the raw link after acceptance/failure/expiry, and retries
-transient API failures. Users can request another link after failure.
-Reset completion invalidates outstanding reset tokens and all existing sessions.
-
-Failed or uncertain developer sends are visible in email details with `lastError` and
-in `delivery_dead_letters`. An operator must reconcile uncertain results with SES
-before sending a replacement using a **new** idempotency key. There is deliberately
-no blind resend button for ambiguous provider acceptance.
-
-Content retention also covers `sent` messages whose final provider event never arrived.
-Configure an R2/S3 lifecycle safety net for orphaned `workspaces/` objects at a duration
-longer than `EMAIL_CONTENT_RETENTION_DAYS` plus the seven-day queue window. The lifecycle
-rule is an operator setup step; the application cannot enumerate uncertain orphan objects.
-
-## Repeatable integration checks
-
-From the repository root, build the isolated test images named in
-`backend/deploy/tests/integration.py`, then run that script with Python 3. It creates and
-removes only a unique test stack, uses fake credentials, and never starts cloudflared.
-Production requests in the suite are not passed to SES. The optional `--keep` flag is
-for local browser QA and requires explicit cleanup of the recorded test project afterward.
+Upgrade migration `0025_remove_managed_email_provider.sql` moves queued legacy
+messages to SMTP and marks legacy domains for Stalwart re-provisioning. On the
+next verifier pass, obsolete managed-provider DNS rows are replaced by records
+for the configured MTA host and IP. Historical completed provider attempts are
+retained for audit accuracy.

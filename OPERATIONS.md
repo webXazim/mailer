@@ -34,9 +34,8 @@ workspace to SMTP, send to operator-owned inboxes at several providers, and conf
 delivery events and a signed customer webhook. Then use `sh manage smtp-resume`.
 Increase the cap in measured steps with `sh manage smtp-cap NUMBER`.
 
-`sh manage smtp-pause` stops new SMTP provider attempts. With SES rollback enabled,
-messages that have no provider attempt may move to SES. A provider attempt that has
-already begun is never sent through another provider automatically because doing so
+`sh manage smtp-pause` stops new SMTP provider attempts. A provider attempt that has
+already begun is never retried automatically because doing so
 could duplicate mail. Disable a sender domain to stop its queued messages at the
 final authorization boundary; an already running provider request cannot be recalled.
 

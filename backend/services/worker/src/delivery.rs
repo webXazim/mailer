@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use async_nats::jetstream::{self, message::AckKind};
-use aws_sdk_sesv2::types::{Body, Content, Destination, EmailContent, Message};
 use base64::Engine;
 use futures::StreamExt;
 use mail_builder::MessageBuilder;
@@ -53,12 +52,6 @@ enum Outcome {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum ProviderControl {
-    Continue,
-    RollbackToSes,
-    Defer,
-}
-
 enum AttemptPreparation {
     Ready,
     Deferred,
@@ -322,9 +315,7 @@ async fn process(
     if email.environment == "test" {
         return simulate(pool, &email).await;
     }
-    match prepare_provider_attempt(pool, providers, workspace_id, &mut email, attempt_number)
-        .await?
-    {
+    match prepare_provider_attempt(pool, workspace_id, &mut email, attempt_number).await? {
         AttemptPreparation::Ready => {}
         AttemptPreparation::Deferred => {
             return Ok(Outcome::Deferred(
@@ -342,7 +333,7 @@ async fn process(
             ))
         }
     }
-    let provider_id = match providers.submit(&email.delivery_provider, &email).await {
+    let provider_id = match providers.submit(&email).await {
         Ok(value) => value,
         Err(ProviderFailure::Retryable(reason)) => {
             if let Err(error) =
@@ -424,7 +415,6 @@ async fn process(
 
 async fn prepare_provider_attempt(
     pool: &db::DbPool,
-    providers: &super::provider::DeliveryProviders,
     workspace_id: Uuid,
     email: &mut Email,
     attempt_number: i32,
@@ -456,32 +446,13 @@ async fn prepare_provider_attempt(
     if !workspace_ready {
         return Ok(AttemptPreparation::WorkspacePaused);
     }
-    if email.delivery_provider == "smtp" {
-        let controls = sqlx::query(
-            "SELECT smtp_paused,ses_rollback_enabled FROM delivery_operator_controls WHERE singleton=true",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        match provider_control(
-            &email.delivery_provider,
-            controls.get("smtp_paused"),
-            controls.get("ses_rollback_enabled"),
-            providers.is_available("ses"),
-        ) {
-            ProviderControl::RollbackToSes => {
-                let changed = sqlx::query("UPDATE emails SET delivery_provider='ses' WHERE id=$1 AND workspace_id=$2 AND status='processing' AND NOT EXISTS(SELECT 1 FROM delivery_provider_attempts WHERE email_id=$1)")
-                    .bind(email.id)
-                    .bind(workspace_id)
-                    .execute(&mut *tx)
-                    .await?;
-                if changed.rows_affected() != 1 {
-                    return Ok(AttemptPreparation::Deferred);
-                }
-                email.delivery_provider = "ses".into();
-            }
-            ProviderControl::Defer => return Ok(AttemptPreparation::Deferred),
-            ProviderControl::Continue => {}
-        }
+    let paused = sqlx::query_scalar::<_, bool>(
+        "SELECT smtp_paused FROM delivery_operator_controls WHERE singleton=true",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if paused {
+        return Ok(AttemptPreparation::Deferred);
     }
     sqlx::query("INSERT INTO delivery_provider_attempts(id,email_id,provider,attempt_number) VALUES($1,$2,$3,$4)")
         .bind(email.attempt_id)
@@ -492,21 +463,6 @@ async fn prepare_provider_attempt(
         .await?;
     tx.commit().await?;
     Ok(AttemptPreparation::Ready)
-}
-
-fn provider_control(
-    provider: &str,
-    smtp_paused: bool,
-    rollback_enabled: bool,
-    ses_available: bool,
-) -> ProviderControl {
-    if provider != "smtp" || !smtp_paused {
-        ProviderControl::Continue
-    } else if rollback_enabled && ses_available {
-        ProviderControl::RollbackToSes
-    } else {
-        ProviderControl::Defer
-    }
 }
 
 async fn finish_provider_attempt(
@@ -524,88 +480,6 @@ async fn finish_provider_attempt(
         .execute(pool)
         .await?;
     Ok(())
-}
-
-pub(crate) async fn send_ses(
-    client: &aws_sdk_sesv2::Client,
-    email: &Email,
-    configuration_set: Option<&str>,
-) -> Result<String, ProviderFailure> {
-    if !email.attachments.is_empty() {
-        return send_raw_ses(client, email, configuration_set).await;
-    }
-    let content = |value: String| Content::builder().data(value).charset("UTF-8").build();
-    let body = Body::builder()
-        .set_text(
-            email
-                .text
-                .clone()
-                .map(content)
-                .transpose()
-                .map_err(|error| ProviderFailure::Permanent(error.to_string()))?,
-        )
-        .set_html(
-            email
-                .html
-                .clone()
-                .map(content)
-                .transpose()
-                .map_err(|error| ProviderFailure::Permanent(error.to_string()))?,
-        )
-        .build();
-    let message = Message::builder()
-        .subject(
-            content(email.subject.clone())
-                .map_err(|error| ProviderFailure::Permanent(error.to_string()))?,
-        )
-        .body(body)
-        .build();
-    let destination = Destination::builder()
-        .set_to_addresses(Some(email.to.clone()))
-        .set_cc_addresses(Some(email.cc.clone()))
-        .set_bcc_addresses(Some(email.bcc.clone()))
-        .build();
-    let mut request = client
-        .send_email()
-        .set_configuration_set_name(configuration_set.map(str::to_owned))
-        .from_email_address(&email.sender)
-        .destination(destination)
-        .content(EmailContent::builder().simple(message).build());
-    if let Some(reply_to) = &email.reply_to {
-        request = request.reply_to_addresses(reply_to);
-    }
-    let response = request.send().await.map_err(classify_provider_error)?;
-    response.message_id().map(str::to_owned).ok_or_else(|| {
-        ProviderFailure::Ambiguous("SES response did not include a message ID".into())
-    })
-}
-
-async fn send_raw_ses(
-    client: &aws_sdk_sesv2::Client,
-    email: &Email,
-    configuration_set: Option<&str>,
-) -> Result<String, ProviderFailure> {
-    let raw = build_raw_message(email, None)?;
-    let raw_message = aws_sdk_sesv2::types::RawMessage::builder()
-        .data(raw.into())
-        .build()
-        .map_err(|error| ProviderFailure::Permanent(error.to_string()))?;
-    let destination = Destination::builder()
-        .set_to_addresses(Some(email.to.clone()))
-        .set_cc_addresses(Some(email.cc.clone()))
-        .set_bcc_addresses(Some(email.bcc.clone()))
-        .build();
-    let response = client
-        .send_email()
-        .set_configuration_set_name(configuration_set.map(str::to_owned))
-        .destination(destination)
-        .content(EmailContent::builder().raw(raw_message).build())
-        .send()
-        .await
-        .map_err(classify_provider_error)?;
-    response.message_id().map(str::to_owned).ok_or_else(|| {
-        ProviderFailure::Ambiguous("SES raw response did not include a message ID".into())
-    })
 }
 
 pub(crate) fn build_raw_message(
@@ -737,43 +611,6 @@ async fn record_dead_letter(
     Ok(())
 }
 
-pub(crate) fn classify_provider_error(
-    error: aws_sdk_sesv2::error::SdkError<aws_sdk_sesv2::operation::send_email::SendEmailError>,
-) -> ProviderFailure {
-    use aws_sdk_sesv2::error::{ProvideErrorMetadata, SdkError};
-    match error {
-        SdkError::ServiceError(context) => {
-            let provider_error = context.err();
-            let code = provider_error
-                .code()
-                .unwrap_or("UnknownServiceError")
-                .to_owned();
-            let reason = provider_error
-                .message()
-                .map(str::trim)
-                .filter(|message| !message.is_empty() && *message != code.as_str())
-                .map(|message| format!("{code}: {message}"))
-                .unwrap_or_else(|| code.clone());
-            if matches!(
-                code.as_str(),
-                "TooManyRequestsException"
-                    | "Throttling"
-                    | "ThrottlingException"
-                    | "LimitExceededException"
-            ) {
-                ProviderFailure::Retryable(reason)
-            } else if context.raw().status().as_u16() >= 500 {
-                ProviderFailure::Ambiguous(reason)
-            } else {
-                ProviderFailure::Permanent(reason)
-            }
-        }
-        SdkError::ConstructionFailure(_) => {
-            ProviderFailure::Permanent("Invalid provider request".into())
-        }
-        _ => ProviderFailure::Ambiguous("Provider transport result is uncertain".into()),
-    }
-}
 fn retry_delay(delivered: i64) -> u64 {
     match delivered {
         1 => 5,
@@ -826,30 +663,8 @@ async fn simulate(pool: &db::DbPool, email: &Email) -> Result<Outcome> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        build_raw_message, mailbox_parts, provider_control, Attachment, Email, ProviderControl,
-    };
+    use super::{build_raw_message, mailbox_parts, Attachment, Email};
     use uuid::Uuid;
-
-    #[test]
-    fn applies_pause_only_before_a_provider_attempt() {
-        assert_eq!(
-            provider_control("smtp", true, true, true),
-            ProviderControl::RollbackToSes
-        );
-        assert_eq!(
-            provider_control("smtp", true, false, true),
-            ProviderControl::Defer
-        );
-        assert_eq!(
-            provider_control("smtp", false, true, true),
-            ProviderControl::Continue
-        );
-        assert_eq!(
-            provider_control("ses", true, true, true),
-            ProviderControl::Continue
-        );
-    }
 
     #[test]
     fn shared_mime_contains_correlation_and_never_exposes_bcc() {

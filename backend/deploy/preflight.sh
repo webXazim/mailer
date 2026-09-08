@@ -8,56 +8,26 @@ test "$(stat -c '%a' .env)" = 600 || fail 'Run chmod 600 .env.'
 set -a
 . ./.env
 set +a
-for name in CLOUDFLARE_TUNNEL_TOKEN TURNSTILE_SITE_KEY TURNSTILE_SECRET_KEY POSTGRES_PASSWORD NATS_PASSWORD EVENT_INGEST_TOKEN WEBHOOK_SIGNING_MASTER_KEY OBJECT_STORAGE_ENDPOINT OBJECT_STORAGE_BUCKET OBJECT_STORAGE_ACCESS_KEY_ID OBJECT_STORAGE_SECRET_ACCESS_KEY; do
+for name in CLOUDFLARE_TUNNEL_TOKEN TURNSTILE_SITE_KEY TURNSTILE_SECRET_KEY POSTGRES_PASSWORD NATS_PASSWORD WEBHOOK_SIGNING_MASTER_KEY OBJECT_STORAGE_ENDPOINT OBJECT_STORAGE_BUCKET OBJECT_STORAGE_ACCESS_KEY_ID OBJECT_STORAGE_SECRET_ACCESS_KEY; do
     eval "value=\${$name:-}"
     test -n "$value" || fail "$name is required (see the top of .env)."
     case "$value" in *REPLACE*|*ACCOUNT_ID*|*change-me*|*mailer-development*) fail "$name still contains a placeholder." ;; esac
 done
-case "${DOMAIN_PROVIDER:-}" in
-    ses)
-        for name in API_AWS_ACCESS_KEY_ID API_AWS_SECRET_ACCESS_KEY; do
-            eval "value=\${$name:-}"
-            test -n "$value" || fail "$name is required when DOMAIN_PROVIDER=ses."
-            case "$value" in *REPLACE*|*change-me*) fail "$name still contains a placeholder." ;; esac
-        done
-        ;;
-    stalwart)
-        for name in STALWART_API_URL STALWART_API_TOKEN MTA_PUBLIC_HOST MTA_PUBLIC_IPV4; do
-            eval "value=\${$name:-}"
-            test -n "$value" || fail "$name is required when DOMAIN_PROVIDER=stalwart."
-            case "$value" in *REPLACE*|*change-me*) fail "$name still contains a placeholder." ;; esac
-        done
-        case "${STALWART_API_URL}" in http://*|https://*) ;; *) fail 'STALWART_API_URL must use http:// or https://.' ;; esac
-        test "${#STALWART_API_TOKEN}" -ge 32 || fail 'STALWART_API_TOKEN must contain at least 32 characters.'
-        case "${MTA_RETURN_PATH_PREFIX:-bounce}" in ''|*[!a-zA-Z0-9-]*) fail 'MTA_RETURN_PATH_PREFIX must be a DNS label.' ;; esac
-        ;;
-    *) fail 'DOMAIN_PROVIDER must be ses or stalwart.' ;;
-esac
-case "${DELIVERY_PROVIDER:-ses}" in
-    ses|smtp) ;;
-    *) fail 'DELIVERY_PROVIDER must be ses or smtp.' ;;
-esac
-if test "${DELIVERY_PROVIDER:-ses}" = smtp || test -n "${SMTP_HOST:-}${SMTP_USERNAME:-}${SMTP_PASSWORD:-}${STALWART_WEBHOOK_TOKEN:-}${STALWART_WEBHOOK_SIGNING_KEY:-}"; then
-    for name in SMTP_HOST SMTP_USERNAME SMTP_PASSWORD SMTP_HELO_NAME STALWART_WEBHOOK_TOKEN STALWART_WEBHOOK_SIGNING_KEY; do
+for name in STALWART_API_URL STALWART_API_TOKEN MTA_PUBLIC_HOST MTA_PUBLIC_IPV4 SMTP_HOST SMTP_USERNAME SMTP_PASSWORD SMTP_HELO_NAME STALWART_WEBHOOK_TOKEN STALWART_WEBHOOK_SIGNING_KEY; do
         eval "value=\${$name:-}"
-        test -n "$value" || fail "Set all SMTP and Stalwart webhook variables to enable cohort routing. Missing $name."
+        test -n "$value" || fail "$name is required for independent mail delivery."
         case "$value" in *REPLACE*|*change-me*) fail "$name still contains a placeholder." ;; esac
-    done
-        case "${SMTP_PORT:-465}" in ''|*[!0-9]*|0) fail 'SMTP_PORT must be a positive port number.' ;; esac
-        test "${SMTP_PORT:-465}" -le 65535 || fail 'SMTP_PORT is outside the port range.'
-        case "${SMTP_SECURITY:-implicit_tls}" in implicit_tls|starttls) ;; *) fail 'SMTP_SECURITY must be implicit_tls or starttls.' ;; esac
-        case "${SMTP_TIMEOUT_SECONDS:-30}" in ''|*[!0-9]*|0) fail 'SMTP_TIMEOUT_SECONDS must be a positive integer.' ;; esac
-        test "${#STALWART_WEBHOOK_TOKEN}" -ge 32 || fail 'STALWART_WEBHOOK_TOKEN must contain at least 32 characters.'
-        test "${#STALWART_WEBHOOK_SIGNING_KEY}" -ge 32 || fail 'STALWART_WEBHOOK_SIGNING_KEY must contain at least 32 characters.'
-        test "$STALWART_WEBHOOK_TOKEN" != "$STALWART_WEBHOOK_SIGNING_KEY" || fail 'Use different Stalwart webhook bearer and HMAC secrets.'
-fi
-if test "${DELIVERY_PROVIDER:-ses}" = ses || test -n "${WORKER_AWS_ACCESS_KEY_ID:-}${WORKER_AWS_SECRET_ACCESS_KEY:-}${SES_EVENTS_QUEUE_URL:-}${SES_EVENTS_TOPIC_ARN:-}${SES_CONFIGURATION_SET:-}"; then
-    for name in WORKER_AWS_ACCESS_KEY_ID WORKER_AWS_SECRET_ACCESS_KEY SES_EVENTS_QUEUE_URL SES_EVENTS_TOPIC_ARN SES_CONFIGURATION_SET; do
-        eval "value=\${$name:-}"
-        test -n "$value" || fail "Set all SES worker/event variables to enable SES routing and rollback. Missing $name."
-        case "$value" in *REPLACE*|*ACCOUNT_ID*|*change-me*) fail "$name still contains a placeholder." ;; esac
-    done
-fi
+done
+case "${STALWART_API_URL}" in http://*|https://*) ;; *) fail 'STALWART_API_URL must use http:// or https://.' ;; esac
+test "${#STALWART_API_TOKEN}" -ge 32 || fail 'STALWART_API_TOKEN must contain at least 32 characters.'
+case "${MTA_RETURN_PATH_PREFIX:-bounce}" in ''|*[!a-zA-Z0-9-]*) fail 'MTA_RETURN_PATH_PREFIX must be a DNS label.' ;; esac
+case "${SMTP_PORT:-465}" in ''|*[!0-9]*|0) fail 'SMTP_PORT must be a positive port number.' ;; esac
+test "${SMTP_PORT:-465}" -le 65535 || fail 'SMTP_PORT is outside the port range.'
+case "${SMTP_SECURITY:-implicit_tls}" in implicit_tls|starttls) ;; *) fail 'SMTP_SECURITY must be implicit_tls or starttls.' ;; esac
+case "${SMTP_TIMEOUT_SECONDS:-30}" in ''|*[!0-9]*|0) fail 'SMTP_TIMEOUT_SECONDS must be a positive integer.' ;; esac
+test "${#STALWART_WEBHOOK_TOKEN}" -ge 32 || fail 'STALWART_WEBHOOK_TOKEN must contain at least 32 characters.'
+test "${#STALWART_WEBHOOK_SIGNING_KEY}" -ge 32 || fail 'STALWART_WEBHOOK_SIGNING_KEY must contain at least 32 characters.'
+test "$STALWART_WEBHOOK_TOKEN" != "$STALWART_WEBHOOK_SIGNING_KEY" || fail 'Use different Stalwart webhook bearer and HMAC secrets.'
 case "${AUTH_EMAIL_DELIVERY_ENABLED:-false}" in
     true)
         test -n "${ACCOUNT_EMAIL_FROM:-}" || fail 'ACCOUNT_EMAIL_FROM is required when AUTH_EMAIL_DELIVERY_ENABLED=true.'
@@ -75,7 +45,7 @@ for name in POSTGRES_PASSWORD NATS_PASSWORD; do
     test "${#value}" -ge 32 || fail "$name must contain at least 32 hex characters."
     case "$value" in *[!a-fA-F0-9]*) fail "$name must be URL-safe hex; generate with openssl rand -hex 32." ;; esac
 done
-for name in EVENT_INGEST_TOKEN WEBHOOK_SIGNING_MASTER_KEY TURNSTILE_SECRET_KEY; do
+for name in WEBHOOK_SIGNING_MASTER_KEY TURNSTILE_SECRET_KEY; do
     eval "value=\${$name}"
     test "${#value}" -ge 32 || fail "$name must contain at least 32 characters."
 done
@@ -103,7 +73,5 @@ case "${CARGO_BUILD_JOBS:-1}" in ''|*[!0-9]*|0) fail 'CARGO_BUILD_JOBS must be a
 command -v docker >/dev/null || fail 'Install Docker Engine and the Compose plugin.'
 docker compose --project-name crescentsphere-mailer --env-file .env -f docker-compose.production.yml config --quiet
 docker info >/dev/null 2>&1 || fail 'Docker Engine is unavailable to this user.'
-if test "${DOMAIN_PROVIDER:-}" = stalwart; then
-    docker network inspect crescentsphere-mail-transport >/dev/null 2>&1 || fail 'Start the independent Stalwart stack before deploying Mailer.'
-fi
-echo "Preflight passed for ${DELIVERY_PROVIDER:-ses} delivery. Provider credentials and public DNS still need a live test."
+docker network inspect crescentsphere-mail-transport >/dev/null 2>&1 || fail 'Start the independent Stalwart stack before deploying Mailer.'
+echo "Preflight passed for independent SMTP delivery. Provider credentials and public DNS still need a live test."

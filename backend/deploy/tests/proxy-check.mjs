@@ -6,9 +6,9 @@ for (const path of ['/healthz', '/', '/login', '/domains']) {
   assert.equal(response.status, 200, path);
 }
 for (const path of [
-  '/internal', '/internal/v1/ses/events', '/api/internal',
-  '/api/internal/v1/ses/events', '/api//internal/v1/ses/events',
-  '/api/%69nternal/v1/ses/events', '/api/internal%2fv1/ses/events',
+  '/internal', '/internal/v1/stalwart/events', '/api/internal',
+  '/api/internal/v1/stalwart/events', '/api//internal/v1/stalwart/events',
+  '/api/%69nternal/v1/stalwart/events', '/api/internal%2fv1/stalwart/events',
 ]) {
   for (const method of ['GET', 'POST']) {
     assert.equal((await fetch(base + path, { method })).status, 404, `${method} ${path}`);

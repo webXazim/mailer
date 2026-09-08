@@ -13,6 +13,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && mkdir -p /out \
     && cp target/release/cs-mail-api target/release/cs-mail-worker /out/
 
+FROM build AS test
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/src/target \
+    cargo test --locked --workspace --jobs "$CARGO_BUILD_JOBS"
+
 FROM debian:bookworm-slim AS api
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates curl \

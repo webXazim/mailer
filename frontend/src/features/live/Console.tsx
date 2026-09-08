@@ -12,7 +12,7 @@ import './console.css'
 function DeveloperDocs() {
   const endpoint = `${window.location.origin}/api/v1/emails`
   return <Panel title="Integrate with the API">
-    <p>Create a test key with <code>emails:send</code> and <code>emails:read</code>. Keep it in a server-side secret store; never put it in browser or mobile code. The API contract does not change when the platform switches between SES and its own SMTP infrastructure.</p>
+    <p>Create a test key with <code>emails:send</code> and <code>emails:read</code>. Keep it in a server-side secret store; never put it in browser or mobile code. Production delivery uses the platform's independent SMTP infrastructure.</p>
     <h3>cURL</h3>
     <pre>{`curl ${endpoint} \\\n+  -H "Authorization: Bearer $MAILER_API_KEY" \\\n+  -H "Idempotency-Key: user-42-welcome-v1" \\\n+  -H "Content-Type: application/json" \\\n+  -d '{"from":"sender@sandbox.mailer.invalid","to":["you@example.com"],"subject":"Welcome","text":"Your account is ready."}'`}</pre>
     <h3>Node.js</h3>

@@ -19,7 +19,7 @@ export function LandingPage({ signedIn, signIn, createAccount }: { signedIn: boo
       <div className="public-hero__copy">
         <p className="public-kicker"><span />Transactional email infrastructure</p>
         <h1>Send application email with delivery you can see.</h1>
-        <p className="public-hero__lead">One API for verification codes, password resets, receipts, and product notifications. Test safely, verify your domain, then send through Amazon SES or your own SMTP infrastructure without changing application code.</p>
+        <p className="public-hero__lead">One API for verification codes, password resets, receipts, and product notifications. Test safely, verify your domain, then send through our independently operated SMTP infrastructure.</p>
         <div className="public-hero__actions">
           <button className="public-button public-button--primary" onClick={createAccount}>{signedIn ? 'Open your console' : 'Create your workspace'} <ArrowRight size={17} /></button>
           <button className="public-button public-button--secondary" onClick={scrollToHowItWorks}>See how it works</button>
@@ -44,7 +44,7 @@ export function LandingPage({ signedIn, signIn, createAccount }: { signedIn: boo
 
     <section className="public-capabilities" aria-label="Mailer capabilities">
       <article><ShieldCheck size={20} /><h2>Safe by default</h2><p>Test keys simulate delivery. Production access starts after sender-domain verification.</p></article>
-      <article><Route size={20} /><h2>Provider flexibility</h2><p>Operate on SES or authenticated SMTP with one stable API contract and status model.</p></article>
+      <article><Route size={20} /><h2>Independent delivery</h2><p>Use authenticated SMTP with one stable API contract and status model.</p></article>
       <article><Webhook size={20} /><h2>Final outcomes</h2><p>Track queued, sent, delivered, bounced, and complained states through signed webhooks.</p></article>
       <article><Globe2 size={20} /><h2>Domain controls</h2><p>Provision DKIM, verify DNS, align return paths, and protect reputation with suppressions.</p></article>
     </section>

@@ -76,7 +76,7 @@ Do not route customer traffic yet. Complete all of these first:
 
 - Unauthenticated relay to an unrelated domain is rejected.
 - Authenticated submission over TLS succeeds.
-- A Stalwart-specific DKIM selector is published without replacing SES DKIM.
+- The Stalwart DKIM selector is published for each sending domain.
 - The direct-delivery return path has its own MX and SPF records.
 - Gmail, Outlook and another receiver report SPF, DKIM and DMARC pass.
 - A queued message survives a container restart.

@@ -1,4 +1,4 @@
-use super::{ses_events, AppState};
+use super::{delivery_events, AppState};
 use axum::{
     body::Bytes,
     extract::DefaultBodyLimit,
@@ -95,7 +95,8 @@ async fn ingest(State(state): State<AppState>, headers: HeaderMap, body: Bytes) 
         };
         let correlation = normalized.correlation;
         let response =
-            ses_events::ingest_event(&state, normalized.event, "smtp", Some(correlation)).await;
+            delivery_events::ingest_event(&state, normalized.event, "smtp", Some(correlation))
+                .await;
         match response.status() {
             status if status.is_success() => accepted += 1,
             StatusCode::NOT_FOUND => {
@@ -110,7 +111,7 @@ async fn ingest(State(state): State<AppState>, headers: HeaderMap, body: Bytes) 
 }
 
 struct NormalizedEvent {
-    event: ses_events::SesEvent,
+    event: delivery_events::DeliveryEvent,
     correlation: (Uuid, Option<Uuid>),
 }
 
@@ -153,7 +154,7 @@ fn normalize(event: StalwartEvent) -> Option<NormalizedEvent> {
     let message_id = message_id.or(envelope_from)?;
     let recipients = find_addresses(&event.data);
     Some(NormalizedEvent {
-        event: ses_events::SesEvent {
+        event: delivery_events::DeliveryEvent {
             event_id: event.id,
             message_id,
             event_type: event_type.to_owned(),

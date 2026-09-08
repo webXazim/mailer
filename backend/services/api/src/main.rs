@@ -2,10 +2,10 @@ mod account_email_templates;
 mod activity;
 mod api_keys;
 mod auth;
+mod delivery_events;
 mod dns_automation;
 mod domains;
 mod emails;
-mod ses_events;
 mod stalwart;
 mod stalwart_events;
 mod suppressions;
@@ -37,18 +37,13 @@ pub(crate) struct AppState {
     environment: String,
     db: db::DbPool,
     nats: async_nats::Client,
-    ses: Option<aws_sdk_sesv2::Client>,
-    domain_provider: String,
     stalwart: Option<stalwart::Client>,
     mta_public_host: Option<String>,
     mta_public_ipv4: Option<String>,
     mta_return_path_prefix: String,
     stalwart_webhook_token: Option<String>,
     stalwart_webhook_signing_key: Option<String>,
-    delivery_provider: String,
-    ses_delivery_available: bool,
     smtp_delivery_available: bool,
-    aws_region: String,
     console_origin: String,
     account_email_from: Option<String>,
     auth_email_delivery_enabled: bool,
@@ -57,7 +52,6 @@ pub(crate) struct AppState {
     cloudflare_oauth_client_id: Option<String>,
     cloudflare_oauth_client_secret: Option<String>,
     cloudflare_oauth_scopes: String,
-    event_ingest_token: String,
     webhook_signing_master_key: String,
     object_store: Option<storage::ObjectStore>,
     api_key_rate_limit_per_minute: u32,
@@ -95,15 +89,6 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     let nats = nats_options.connect(nats_server).await?;
-    let ses = if settings.domain_provider == "ses" {
-        let aws = aws_config::defaults(aws_config::BehaviorVersion::latest())
-            .region(aws_config::Region::new(settings.aws_region.clone()))
-            .load()
-            .await;
-        Some(aws_sdk_sesv2::Client::new(&aws))
-    } else {
-        None
-    };
     let object_store = storage::ObjectStore::from_settings(&settings).await?;
     let stalwart = match (&settings.stalwart_api_url, &settings.stalwart_api_token) {
         (Some(url), Some(token)) => Some(stalwart::Client::new(url.clone(), token.clone())),
@@ -114,24 +99,18 @@ async fn main() -> anyhow::Result<()> {
         environment: settings.app_env.clone(),
         db,
         nats,
-        ses,
-        domain_provider: settings.domain_provider.clone(),
         stalwart,
         mta_public_host: settings.mta_public_host.clone(),
         mta_public_ipv4: settings.mta_public_ipv4.clone(),
         mta_return_path_prefix: settings.mta_return_path_prefix.clone(),
         stalwart_webhook_token: settings.stalwart_webhook_token.clone(),
         stalwart_webhook_signing_key: settings.stalwart_webhook_signing_key.clone(),
-        delivery_provider: settings.delivery_provider.clone(),
-        ses_delivery_available: settings.ses_configuration_set.is_some()
-            && settings.ses_events_queue_url.is_some(),
         smtp_delivery_available: settings.smtp_host.is_some()
             && settings.smtp_username.is_some()
             && settings.smtp_password.is_some()
             && settings.smtp_helo_name.is_some()
             && settings.stalwart_webhook_token.is_some()
             && settings.stalwart_webhook_signing_key.is_some(),
-        aws_region: settings.aws_region.clone(),
         console_origin: settings.console_origin.clone(),
         account_email_from: settings.account_email_from.clone(),
         auth_email_delivery_enabled: settings.auth_email_delivery_enabled,
@@ -140,7 +119,6 @@ async fn main() -> anyhow::Result<()> {
         cloudflare_oauth_client_id: settings.cloudflare_oauth_client_id.clone(),
         cloudflare_oauth_client_secret: settings.cloudflare_oauth_client_secret.clone(),
         cloudflare_oauth_scopes: settings.cloudflare_oauth_scopes.clone(),
-        event_ingest_token: settings.event_ingest_token.clone(),
         webhook_signing_master_key: settings.webhook_signing_master_key.clone(),
         object_store,
         api_key_rate_limit_per_minute: settings.api_key_rate_limit_per_minute,
@@ -160,7 +138,6 @@ async fn main() -> anyhow::Result<()> {
         .merge(domains::routes())
         .merge(dns_automation::routes())
         .merge(emails::routes())
-        .merge(ses_events::routes())
         .merge(stalwart_events::routes())
         .merge(webhooks::routes())
         .merge(activity::routes())

@@ -104,5 +104,5 @@ Before routing production traffic to SMTP:
 6. Replay the same signed body and confirm no duplicate delivery event or usage
    increment appears.
 
-Keep SES SQS ingestion running for SES-routed attempts during migration. The two
-adapters use separate authentication and correlation paths.
+Stalwart is the sole production event source. Keep its signed webhook healthy so
+delivery, bounce, complaint, and suppression state remains current.

@@ -1,6 +1,6 @@
 # Stalwart domain provisioning
 
-This upgrade lets Mailer onboard and verify sending domains without Amazon SES.
+Mailer onboards and verifies sending domains through the independent Stalwart MTA.
 Stalwart stores each domain and its private RSA DKIM key. Mailer stores only the
 public DNS value and Stalwart object identifiers.
 
@@ -110,9 +110,9 @@ key in Stalwart and removes the old record from its displayed instructions.
 The stale public TXT can be deleted later at providers that do not support the
 Cloudflare shortcut; it cannot be used after the old private key is destroyed.
 
-Disabling a Stalwart-backed domain first disables its Domain object, then marks
-the Mailer domain disabled. SES-backed domains created before migration remain
-identified as SES domains and are never deleted from SES by Mailer.
+Disabling a domain first disables its Stalwart Domain object, then marks the
+Mailer domain disabled. Legacy domains are re-provisioned into Stalwart by the
+background verifier after the provider-removal migration.
 
 ## Deployment order
 

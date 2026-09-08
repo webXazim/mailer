@@ -432,11 +432,10 @@ async fn send_email(
             "Unable to reserve workspace capacity",
         );
     }
-    let delivery_provider =
-        match resolve_delivery_provider(&state, &mut tx, workspace_id, &environment).await {
-            Ok(value) => value,
-            Err(response) => return response,
-        };
+    let delivery_provider = match resolve_delivery_provider(&state, &mut tx, &environment).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
     let accepted = match sqlx::query_scalar::<_, i64>("INSERT INTO usage_counters (workspace_id, period_start, emails_accepted) VALUES ($1, date_trunc('month', now())::date, 1) ON CONFLICT (workspace_id, period_start) DO UPDATE SET emails_accepted = usage_counters.emails_accepted + 1 RETURNING emails_accepted")
         .bind(workspace_id).fetch_one(&mut *tx).await {
         Ok(value) => value,
@@ -557,27 +556,13 @@ fn should_contain_rate(environment: &str, rate: i64, limit: i64) -> bool {
 async fn resolve_delivery_provider(
     state: &AppState,
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    workspace_id: Uuid,
     environment: &str,
 ) -> Result<String, Response> {
     if environment == "test" {
-        return Ok(state.delivery_provider.clone());
+        return Ok("smtp".to_owned());
     }
-    let route = sqlx::query_scalar::<_, String>(
-        "SELECT provider FROM workspace_delivery_routes WHERE workspace_id=$1",
-    )
-    .bind(workspace_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(|_| {
-        error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal_error",
-            "Unable to resolve delivery route",
-        )
-    })?;
     let controls = sqlx::query(
-        "SELECT default_provider,smtp_paused,smtp_daily_email_limit,ses_rollback_enabled FROM delivery_operator_controls WHERE singleton=true FOR SHARE",
+        "SELECT smtp_paused,smtp_daily_email_limit FROM delivery_operator_controls WHERE singleton=true FOR SHARE",
     )
     .fetch_one(&mut **tx)
     .await
@@ -588,21 +573,12 @@ async fn resolve_delivery_provider(
             "Unable to load delivery controls",
         )
     })?;
-    let runtime_default: Option<String> = controls.get("default_provider");
-    let requested = requested_provider(route, runtime_default, &state.delivery_provider);
-    let rollback = controls.get::<bool, _>("ses_rollback_enabled");
     let paused = controls.get::<bool, _>("smtp_paused");
-    let selected = choose_delivery_provider(
-        &requested,
-        state.ses_delivery_available,
-        state.smtp_delivery_available,
-        paused,
-        rollback,
-        true,
-    )
-    .map_err(delivery_unavailable)?;
-    if selected == "ses" {
-        return Ok(selected.to_owned());
+    if !state.smtp_delivery_available {
+        return Err(delivery_unavailable("SMTP delivery is not configured"));
+    }
+    if paused {
+        return Err(delivery_unavailable("SMTP delivery is paused"));
     }
     let daily_limit = controls.get::<i64, _>("smtp_daily_email_limit");
     let admitted = sqlx::query_scalar::<_, i64>(
@@ -621,59 +597,7 @@ async fn resolve_delivery_provider(
     if admitted.is_some() {
         Ok("smtp".to_owned())
     } else {
-        choose_delivery_provider(
-            &requested,
-            state.ses_delivery_available,
-            state.smtp_delivery_available,
-            paused,
-            rollback,
-            false,
-        )
-        .map(str::to_owned)
-        .map_err(delivery_unavailable)
-    }
-}
-
-fn requested_provider(
-    workspace_route: Option<String>,
-    runtime_default: Option<String>,
-    configured_default: &str,
-) -> String {
-    workspace_route
-        .or(runtime_default)
-        .unwrap_or_else(|| configured_default.to_owned())
-}
-
-fn choose_delivery_provider(
-    requested: &str,
-    ses_available: bool,
-    smtp_available: bool,
-    smtp_paused: bool,
-    rollback_enabled: bool,
-    smtp_capacity: bool,
-) -> Result<&str, &'static str> {
-    if requested == "ses" {
-        return ses_available
-            .then_some("ses")
-            .ok_or("SES delivery is not configured");
-    }
-    let smtp_reason = if !smtp_available {
-        Some("SMTP delivery is not configured")
-    } else if smtp_paused {
-        Some("SMTP delivery is paused")
-    } else if !smtp_capacity {
-        Some("SMTP daily volume cap reached")
-    } else {
-        None
-    };
-    if let Some(reason) = smtp_reason {
-        if rollback_enabled && ses_available {
-            Ok("ses")
-        } else {
-            Err(reason)
-        }
-    } else {
-        Ok(requested)
+        Err(delivery_unavailable("SMTP daily volume cap reached"))
     }
 }
 
@@ -814,19 +738,9 @@ fn error(status: StatusCode, code: &str, message: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::{
-        choose_delivery_provider, mailbox_address, requested_provider, sender_domain,
-        should_contain_rate, valid_email, validate_attachments, AttachmentInput,
+        mailbox_address, sender_domain, should_contain_rate, valid_email, validate_attachments,
+        AttachmentInput,
     };
-
-    #[test]
-    fn workspace_route_precedes_runtime_and_configured_defaults() {
-        assert_eq!(
-            requested_provider(Some("ses".into()), Some("smtp".into()), "ses"),
-            "ses"
-        );
-        assert_eq!(requested_provider(None, Some("smtp".into()), "ses"), "smtp");
-        assert_eq!(requested_provider(None, None, "ses"), "ses");
-    }
 
     #[test]
     fn parses_display_name_sender() {
@@ -865,30 +779,6 @@ mod tests {
             content_id: None,
         };
         assert!(validate_attachments(Some(vec![invalid])).is_err());
-    }
-
-    #[test]
-    fn routing_rolls_back_only_before_smtp_capacity_is_used() {
-        assert_eq!(
-            choose_delivery_provider("smtp", true, true, false, true, true),
-            Ok("smtp")
-        );
-        assert_eq!(
-            choose_delivery_provider("smtp", true, true, false, true, false),
-            Ok("ses")
-        );
-        assert_eq!(
-            choose_delivery_provider("smtp", true, true, false, false, false),
-            Err("SMTP daily volume cap reached")
-        );
-        assert_eq!(
-            choose_delivery_provider("smtp", true, true, true, false, true),
-            Err("SMTP delivery is paused")
-        );
-        assert_eq!(
-            choose_delivery_provider("smtp", false, true, false, true, true),
-            Ok("smtp")
-        );
     }
 
     #[test]

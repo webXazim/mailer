@@ -7,7 +7,7 @@ services are intentionally outside this repository.
 
 - [`frontend/`](frontend/README.md): React, Vite, and TypeScript console.
 - [`backend/`](backend/README.md): Rust/Axum API, worker, PostgreSQL, NATS
-  JetStream, selectable SES/SMTP delivery, and S3-compatible object storage.
+  JetStream, independent SMTP delivery, and S3-compatible object storage.
 
 Run all normal development, verification, Docker, and deployment commands from
 this directory through `sh manage`. The `Makefile` provides optional aliases.
@@ -57,9 +57,9 @@ chmod 600 .env
 sh manage deploy
 ```
 
-`production-init` creates `.env` with four independent random local secrets and
-refuses to overwrite an existing file. Enter the tunnel token, separate API and
-provider credentials, SES/SQS event configuration when SES is selected, and object-storage credentials
+`production-init` creates `.env` with three independent random local secrets and
+refuses to overwrite an existing file. Enter the tunnel token, Stalwart/SMTP
+credentials, and object-storage credentials
 at the **top** of the file. The lower section contains runtime defaults. If you
 securely copy an existing `.env`, skip initialization and keep its secrets.
 The ignored local `.env` is never delivered by Git; transfer it securely or enter
@@ -68,18 +68,14 @@ assignments; single-quote values containing `$`, spaces or `#`.
 
 Before deploying an existing installation after an upgrade, run
 `sh manage production-env-upgrade`. It adds missing variables from the current
-example without changing existing values. Complete the new secrets and provider
+example, removes retired managed-provider variables, and preserves other existing values. Complete the new secrets and provider
 settings using [Production environment setup](PRODUCTION_ENVIRONMENT.md), then run
 the normal preflight and deployment commands.
 
 Additional values at the top of `.env`:
 
-- `SES_CONFIGURATION_SET`: the exact SES configuration-set name whose event destination
-  publishes to your SNS topic. Required when `DELIVERY_PROVIDER=ses`.
-- `DELIVERY_PROVIDER`: `ses` for the existing managed transport or `smtp` for an
-  authenticated SMTP relay such as the isolated Stalwart deployment.
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and
-  `SMTP_HELO_NAME`: required when `DELIVERY_PROVIDER=smtp`. Use port 465 with
+  `SMTP_HELO_NAME`: configure the isolated Stalwart deployment. Use port 465 with
   `implicit_tls`, or port 587 with `starttls`; plaintext submission is unsupported.
 - `AUTH_EMAIL_DELIVERY_ENABLED`: leave `false` to let new users sign in immediately;
   set `true` after verification and password-recovery email delivery is ready.
@@ -113,26 +109,21 @@ automatically and starts in **Test**:
 send from `sender@sandbox.mailer.invalid`, create a test key, and inspect the resulting
 email/events. No domain or real recipient is needed for that simulation. Then add a
 domain you control and publish its ownership TXT/DKIM/MAIL FROM records. Mailer checks
-DNS and the configured domain provider automatically. Once the domain is verified, the
+DNS and Stalwart automatically. Once the domain is verified, the
 workspace can create a **Production** key for real messages. Domain provisioning can use
-SES or the independent Stalwart JMAP management API. SES delivery requires production
-access in the configured `AWS_REGION`; SMTP delivery requires an authenticated,
-production-ready relay. See [Stalwart domain provisioning](STALWART_DOMAIN_PROVISIONING.md)
+the independent Stalwart JMAP management API, and delivery requires an authenticated,
+production-ready SMTP relay. See [Stalwart domain provisioning](STALWART_DOMAIN_PROVISIONING.md)
 and [Stalwart delivery events](STALWART_EVENT_INGESTION.md). Staged provider
-cohorts, pause controls, caps, and rollback are covered in
-[Delivery routing and rollback](DELIVERY_ROUTING.md). The independent Garage option
+pause controls and caps are covered in the operator runbook. The independent Garage option
 is covered in [Self-hosted object storage](SELF_HOSTED_STORAGE.md).
 
 For day-to-day production commands and incident recipes, use the
-[operator controls runbook](CONTROLS.md). It covers safe SES/SMTP switching,
-workspace containment, provider caps, service lifecycle, and recovery controls.
+[operator controls runbook](CONTROLS.md). It covers SMTP pause and capacity controls,
+workspace containment, service lifecycle, and recovery controls.
 
-The public email API is provider-neutral. Applications keep the same endpoint,
-API key, idempotency key, request body, status polling, and webhooks when an
-operator switches between SES and SMTP. Use `sh manage default-provider ses` or
-`sh manage default-provider smtp` for new default traffic; existing accepted
-messages retain their stored route. See the [platform upgrade plan](PLATFORM_UPGRADE_PLAN.md)
-for the developer, system-email, multi-domain, and rollout gates.
+Applications use one stable public email API backed by the independent SMTP transport.
+The endpoint, API key, idempotency key, request body, status polling, and webhooks
+remain stable across infrastructure upgrades.
 
 In the Cloudflare dashboard, configure the supplied tunnel's published application:
 
@@ -205,11 +196,10 @@ your VPS by this change.
 ### Testing and customer-launch checklist
 
 Use `APP_ENV=production` even for VPS testing so HTTPS cookies and production
-validation stay enabled. This requires real selected-provider and object-storage settings; test API keys
+validation stay enabled. This requires real SMTP/Stalwart and object-storage settings; test API keys
 and test-environment email submissions simulate delivery. They do not exercise
-real SES delivery. See [backend configuration](backend/README.md) for IAM,
-SES event setup and a real delivery test. Cloudflare Tunnel carries HTTP traffic;
-it is not an SMTP server or a replacement for SES.
+real SMTP delivery. See [backend configuration](backend/README.md) for setup and
+a real delivery test. Cloudflare Tunnel carries HTTP traffic; it is not an SMTP server.
 
 The console supports public registration protected by Cloudflare Turnstile. Account email
 delivery is disabled by default, so signup creates a session immediately. Email verification
@@ -223,7 +213,7 @@ Before customer use:
 - Rotate the tunnel token shared in chat, update only the token in `.env`, and
   run `sh manage deploy`. Do not regenerate DB/NATS/webhook secrets on updates.
 - Pin `CLOUDFLARED_IMAGE` to a reviewed version/digest instead of `latest`.
-- Confirm SES production access in `AWS_REGION`, verified domains, IAM permissions and quotas.
+- Confirm forward and reverse DNS, outbound port 25, verified domains, DKIM signing, and bounce processing.
 - Configure encrypted offsite backups and rehearse recovery. See the backend
   recovery instructions; enable the object-storage backup and plan NATS recovery.
 - Run `sh manage healthcheck` and a complete real send/event/webhook test.
@@ -233,9 +223,7 @@ and [Docker Compose up / health waiting](https://docs.docker.com/reference/cli/d
 
 ## Self-hosted mail transport
 
-The staged migration from SES delivery to an independently operated Stalwart MTA
-is documented in [SELF_HOSTED_MTA_ROADMAP.md](SELF_HOSTED_MTA_ROADMAP.md). The
-initial isolated deployment and VPS commands are in
+The independently operated Stalwart MTA deployment and VPS commands are in
 [STALWART_DEPLOYMENT.md](STALWART_DEPLOYMENT.md). Stalwart has a separate Compose
 project and lifecycle; it is not started, stopped, or rebuilt by `sh manage deploy`.
 

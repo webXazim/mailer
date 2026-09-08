@@ -7,7 +7,6 @@ use std::{
 };
 use url::Url;
 
-const DEVELOPMENT_EVENT_TOKEN: &str = "development-event-token-change-me";
 const DEVELOPMENT_WEBHOOK_MASTER_KEY: &str = "development-webhook-master-key-change-me";
 
 #[derive(Clone, Deserialize)]
@@ -17,9 +16,6 @@ pub struct Settings {
     pub database_url: String,
     pub nats_url: String,
     pub console_origin: String,
-    pub aws_region: String,
-    pub ses_configuration_set: Option<String>,
-    pub delivery_provider: String,
     pub smtp_host: Option<String>,
     pub smtp_port: u16,
     pub smtp_security: String,
@@ -35,7 +31,6 @@ pub struct Settings {
     pub cloudflare_oauth_client_id: Option<String>,
     pub cloudflare_oauth_client_secret: Option<String>,
     pub cloudflare_oauth_scopes: String,
-    pub domain_provider: String,
     pub stalwart_api_url: Option<String>,
     pub stalwart_api_token: Option<String>,
     pub mta_public_host: Option<String>,
@@ -43,10 +38,7 @@ pub struct Settings {
     pub mta_return_path_prefix: String,
     pub stalwart_webhook_token: Option<String>,
     pub stalwart_webhook_signing_key: Option<String>,
-    pub event_ingest_token: String,
     pub webhook_signing_master_key: String,
-    pub ses_events_queue_url: Option<String>,
-    pub ses_events_topic_arn: Option<String>,
     pub internal_api_url: String,
     pub object_storage_provider: String,
     pub object_storage_endpoint: Option<String>,
@@ -78,9 +70,6 @@ impl Settings {
         let nats_url = env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
         let console_origin =
             env::var("CONSOLE_ORIGIN").unwrap_or_else(|_| "http://localhost:5173".into());
-        let aws_region = env::var("AWS_REGION").unwrap_or_else(|_| "ap-southeast-1".into());
-        let ses_configuration_set = optional("SES_CONFIGURATION_SET");
-        let delivery_provider = env::var("DELIVERY_PROVIDER").unwrap_or_else(|_| "ses".into());
         let smtp_host = optional("SMTP_HOST");
         let smtp_port_value = parse_u32("SMTP_PORT", 465)?;
         let smtp_port =
@@ -102,7 +91,6 @@ impl Settings {
         let cloudflare_oauth_client_secret = optional("CLOUDFLARE_OAUTH_CLIENT_SECRET");
         let cloudflare_oauth_scopes =
             env::var("CLOUDFLARE_OAUTH_SCOPES").unwrap_or_else(|_| "zone.read dns.write".into());
-        let domain_provider = env::var("DOMAIN_PROVIDER").unwrap_or_else(|_| "disabled".into());
         let stalwart_api_url = optional("STALWART_API_URL");
         let stalwart_api_token = optional("STALWART_API_TOKEN");
         let mta_public_host = optional("MTA_PUBLIC_HOST");
@@ -111,16 +99,8 @@ impl Settings {
             env::var("MTA_RETURN_PATH_PREFIX").unwrap_or_else(|_| "bounce".into());
         let stalwart_webhook_token = optional("STALWART_WEBHOOK_TOKEN");
         let stalwart_webhook_signing_key = optional("STALWART_WEBHOOK_SIGNING_KEY");
-        let event_ingest_token =
-            env::var("EVENT_INGEST_TOKEN").unwrap_or_else(|_| DEVELOPMENT_EVENT_TOKEN.into());
         let webhook_signing_master_key = env::var("WEBHOOK_SIGNING_MASTER_KEY")
             .unwrap_or_else(|_| DEVELOPMENT_WEBHOOK_MASTER_KEY.into());
-        let ses_events_queue_url = env::var("SES_EVENTS_QUEUE_URL")
-            .ok()
-            .filter(|value| !value.trim().is_empty());
-        let ses_events_topic_arn = env::var("SES_EVENTS_TOPIC_ARN")
-            .ok()
-            .filter(|value| !value.trim().is_empty());
         let internal_api_url =
             env::var("INTERNAL_API_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".into());
         let object_storage_provider =
@@ -148,16 +128,18 @@ impl Settings {
         if !(1..=3650).contains(&email_content_retention_days) {
             bail!("EMAIL_CONTENT_RETENTION_DAYS must be between 1 and 3650");
         }
-        if !matches!(domain_provider.as_str(), "disabled" | "ses" | "stalwart") {
-            bail!("DOMAIN_PROVIDER must be disabled, ses, or stalwart");
-        }
-        if domain_provider == "stalwart"
-            && (stalwart_api_url.is_none()
-                || stalwart_api_token.is_none()
-                || mta_public_host.is_none()
-                || mta_public_ipv4.is_none())
+        let stalwart_values = [
+            stalwart_api_url.as_ref(),
+            stalwart_api_token.as_ref(),
+            mta_public_host.as_ref(),
+            mta_public_ipv4.as_ref(),
+        ];
+        let stalwart_configured = stalwart_values.iter().all(|value| value.is_some());
+        let stalwart_requested = stalwart_values.iter().any(|value| value.is_some());
+        if (stalwart_requested && !stalwart_configured)
+            || (app_env == "production" && !stalwart_configured)
         {
-            bail!("STALWART_API_URL, STALWART_API_TOKEN, MTA_PUBLIC_HOST, and MTA_PUBLIC_IPV4 are required when DOMAIN_PROVIDER=stalwart");
+            bail!("STALWART_API_URL, STALWART_API_TOKEN, MTA_PUBLIC_HOST, and MTA_PUBLIC_IPV4 must be set together");
         }
         if mta_return_path_prefix.is_empty()
             || !mta_return_path_prefix
@@ -183,7 +165,7 @@ impl Settings {
                 bail!("STALWART_API_URL may use HTTP in production only for the private Stalwart service");
             }
         }
-        if domain_provider == "stalwart" {
+        if stalwart_configured {
             let public_host = mta_public_host.as_deref().expect("checked above");
             if !is_dns_name(public_host) || public_host.parse::<IpAddr>().is_ok() {
                 bail!("MTA_PUBLIC_HOST must be a DNS hostname");
@@ -204,8 +186,7 @@ impl Settings {
             smtp_helo_name.as_ref(),
         ];
         let smtp_configured = smtp_values.iter().all(|value| value.is_some());
-        let smtp_requested =
-            smtp_host.is_some() || smtp_username.is_some() || smtp_password.is_some();
+        let smtp_requested = smtp_values.iter().any(|value| value.is_some());
         if smtp_requested && !smtp_configured {
             bail!("Set SMTP_HOST, SMTP_USERNAME, SMTP_PASSWORD, and SMTP_HELO_NAME together");
         }
@@ -226,20 +207,14 @@ impl Settings {
                 bail!("{name} must contain at least 32 characters");
             }
         }
-        if !matches!(delivery_provider.as_str(), "ses" | "smtp") {
-            bail!("DELIVERY_PROVIDER must be ses or smtp");
-        }
         if !matches!(smtp_security.as_str(), "implicit_tls" | "starttls") {
             bail!("SMTP_SECURITY must be implicit_tls or starttls");
         }
         if smtp_timeout_seconds == 0 || smtp_timeout_seconds > 300 {
             bail!("SMTP_TIMEOUT_SECONDS must be between 1 and 300");
         }
-        if delivery_provider == "smtp" && !smtp_configured {
-            bail!("SMTP_HOST, SMTP_USERNAME, SMTP_PASSWORD, and SMTP_HELO_NAME are required when DELIVERY_PROVIDER=smtp");
-        }
-        if ses_events_queue_url.is_some() != ses_events_topic_arn.is_some() {
-            bail!("SES_EVENTS_QUEUE_URL and SES_EVENTS_TOPIC_ARN must be set together");
+        if app_env == "production" && !smtp_configured {
+            bail!("SMTP_HOST, SMTP_USERNAME, SMTP_PASSWORD, and SMTP_HELO_NAME are required");
         }
         if !matches!(object_storage_provider.as_str(), "disabled" | "r2" | "s3") {
             bail!("OBJECT_STORAGE_PROVIDER must be disabled, r2, or s3");
@@ -300,33 +275,8 @@ impl Settings {
             if internal_url.host_str().is_none() {
                 bail!("INTERNAL_API_URL must include a host");
             }
-            if domain_provider == "disabled" {
-                bail!("DOMAIN_PROVIDER must be ses or stalwart in production");
-            }
-            if delivery_provider == "ses" {
-                if ses_configuration_set.is_none() {
-                    bail!("SES_CONFIGURATION_SET is required when DELIVERY_PROVIDER=ses");
-                }
-                if ses_events_queue_url.is_none()
-                    || ses_events_topic_arn.is_none()
-                    || ses_events_queue_url
-                        .as_deref()
-                        .is_some_and(|value| value.contains("ACCOUNT_ID"))
-                    || ses_events_topic_arn
-                        .as_deref()
-                        .is_some_and(|value| value.contains("ACCOUNT_ID"))
-                {
-                    bail!("SES_EVENTS_QUEUE_URL and SES_EVENTS_TOPIC_ARN are required when DELIVERY_PROVIDER=ses");
-                }
-            }
             if object_storage_provider == "disabled" {
                 bail!("OBJECT_STORAGE_PROVIDER must be enabled in production");
-            }
-            if event_ingest_token.len() < 32
-                || event_ingest_token == DEVELOPMENT_EVENT_TOKEN
-                || event_ingest_token.starts_with("REPLACE_WITH")
-            {
-                bail!("EVENT_INGEST_TOKEN must contain at least 32 characters in production");
             }
             if webhook_signing_master_key.len() < 32
                 || webhook_signing_master_key == DEVELOPMENT_WEBHOOK_MASTER_KEY
@@ -352,9 +302,6 @@ impl Settings {
             database_url,
             nats_url,
             console_origin,
-            aws_region,
-            ses_configuration_set,
-            delivery_provider,
             smtp_host,
             smtp_port,
             smtp_security,
@@ -370,7 +317,6 @@ impl Settings {
             cloudflare_oauth_client_id,
             cloudflare_oauth_client_secret,
             cloudflare_oauth_scopes,
-            domain_provider,
             stalwart_api_url,
             stalwart_api_token,
             mta_public_host,
@@ -378,10 +324,7 @@ impl Settings {
             mta_return_path_prefix,
             stalwart_webhook_token,
             stalwart_webhook_signing_key,
-            event_ingest_token,
             webhook_signing_master_key,
-            ses_events_queue_url,
-            ses_events_topic_arn,
             internal_api_url,
             object_storage_provider,
             object_storage_endpoint,

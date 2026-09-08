@@ -7,6 +7,9 @@ Run:   python backend/deploy/tests/integration.py
 Never reads .env, starts cloudflared, or sends provider email. --keep supports local UI QA.
 """
 import argparse
+import base64
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -27,25 +30,21 @@ def main():
     project = 'mailer-integration-' + uuid.uuid4().hex[:10]
     temporary = tempfile.TemporaryDirectory(prefix='mailer-integration-')
     directory = Path(temporary.name)
-    values = {key: secrets.token_hex(32) for key in ['POSTGRES_PASSWORD', 'NATS_PASSWORD', 'EVENT_INGEST_TOKEN', 'WEBHOOK_SIGNING_MASTER_KEY']}
-    values.update(APP_ENV='development', DOMAIN_PROVIDER='disabled', OBJECT_STORAGE_PROVIDER='disabled',
+    values = {key: secrets.token_hex(32) for key in ['POSTGRES_PASSWORD', 'NATS_PASSWORD', 'WEBHOOK_SIGNING_MASTER_KEY', 'STALWART_WEBHOOK_TOKEN', 'STALWART_WEBHOOK_SIGNING_KEY']}
+    values.update(APP_ENV='development', OBJECT_STORAGE_PROVIDER='disabled',
                   AUTH_EMAIL_DELIVERY_ENABLED='true',
-                  ACCOUNT_EMAIL_FROM='account@integration.invalid', SES_CONFIGURATION_SET='',
+                  ACCOUNT_EMAIL_FROM='account@integration.invalid',
                   TURNSTILE_SITE_KEY='1x00000000000000000000AA',
                   TURNSTILE_SECRET_KEY='1x0000000000000000000000000000000AA',
-                  SES_EVENTS_QUEUE_URL='', SES_EVENTS_TOPIC_ARN='', CLOUDFLARE_TUNNEL_TOKEN='unused',
-                  API_AWS_ACCESS_KEY_ID='unused', API_AWS_SECRET_ACCESS_KEY='unused',
-                  WORKER_AWS_ACCESS_KEY_ID='unused', WORKER_AWS_SECRET_ACCESS_KEY='unused', FRONTEND_PORT='0',
+                  CLOUDFLARE_TUNNEL_TOKEN='unused', FRONTEND_PORT='0',
                   API_KEY_RATE_LIMIT_PER_MINUTE='1000', CLIENT_IP_RATE_LIMIT_PER_MINUTE='1000')
     envfile = directory / 'test.env'
     envfile.write_text('\n'.join(f'{k}={v}' for k, v in values.items()) + '\n')
     override = directory / 'compose.json'
     override.write_text(json.dumps({'services': {
-        'api': {'image': 'mailer-usable-api:local', 'environment': {'AWS_EC2_METADATA_DISABLED': 'true'}},
+        'api': {'image': 'mailer-usable-api:local'},
         'frontend': {'image': 'mailer-usable-frontend:local'},
-        'worker': {'image': 'mailer-usable-worker:local', 'environment': {
-            'AWS_EC2_METADATA_DISABLED': 'true', 'ACCOUNT_EMAIL_FROM': '',
-            'AWS_ENDPOINT_URL_SESV2': 'http://127.0.0.1:9'}}
+        'worker': {'image': 'mailer-usable-worker:local', 'environment': {'ACCOUNT_EMAIL_FROM': ''}}
     }}))
     environment = dict(os.environ, **values)
     compose = ['docker', 'compose', '--project-name', project, '--env-file', str(envfile),
@@ -60,12 +59,14 @@ def main():
     def sql(query):
         return run(['exec', '-T', 'postgres', 'psql', '-U', 'mailer', '-d', 'mailer', '-At', '-v', 'ON_ERROR_STOP=1'], query).strip()
 
-    def request(method, path, body=None, cookie=None, key=None, idem=None, internal=False):
+    def request(method, path, body=None, cookie=None, key=None, idem=None, internal=False, headers=None):
         url = 'http://127.0.0.1:8080' if internal else 'http://127.0.0.1:8081/api'
         args = ['exec', '-T', 'api', 'curl', '-sS', '-i', '-X', method, url + path, '-H', 'Content-Type: application/json']
         for name, value in [('Cookie', cookie), ('Authorization', 'Bearer ' + key if key else None), ('Idempotency-Key', idem)]:
             if value:
                 args += ['-H', f'{name}: {value}']
+        for name, value in (headers or {}).items():
+            args += ['-H', f'{name}: {value}']
         if body is not None:
             args += ['--data-binary', '@-']
         raw = run(args, json.dumps(body) if body is not None else None)
@@ -162,11 +163,14 @@ def main():
         expect(200,request('DELETE',f'/v1/suppressions/{suppression}',cookie=cookie))
         print('PASS: safe webhook destinations, atomic rotation with DB fault, limits and suppressions', flush=True)
 
-        sql(f"UPDATE emails SET status='sent',provider_message_id='integration-provider-id',sent_at=now() WHERE id='{live}';")
-        event={'eventId':'integration-bounce','messageId':'integration-provider-id','eventType':'bounce','occurredAt':'2026-08-31T00:01:00Z','recipients':['recipient@integration.invalid'],'bounceType':'Permanent','details':{}}
-        expect(401,request('POST','/internal/v1/ses/events',event,internal=True,key='invalid'))
-        expect(200,request('POST','/internal/v1/ses/events',event,internal=True,key=values['EVENT_INGEST_TOKEN']))
-        expect(200,request('POST','/internal/v1/ses/events',event,internal=True,key=values['EVENT_INGEST_TOKEN']))
+        attempt = str(uuid.uuid4())
+        sql(f"UPDATE emails SET status='sent',provider_message_id='integration-provider-id',sent_at=now() WHERE id='{live}'; INSERT INTO delivery_provider_attempts(id,email_id,provider,attempt_number,status,provider_message_id,completed_at) VALUES('{attempt}','{live}','smtp',1,'integration-provider-id',now());")
+        event={'events':[{'id':'integration-bounce','createdAt':'2026-08-31T00:01:00Z','type':'delivery.dsn-perm-fail','data':{'messageId':f'{live}.{attempt}@smtp.integration.invalid','to':['recipient@integration.invalid']}}]}
+        encoded=json.dumps(event).encode()
+        signature=base64.b64encode(hmac.new(values['STALWART_WEBHOOK_SIGNING_KEY'].encode(),encoded,hashlib.sha256).digest()).decode()
+        event_headers={'Authorization':'Bearer '+values['STALWART_WEBHOOK_TOKEN'],'X-Signature':signature}
+        expect(200,request('POST','/internal/v1/stalwart/events',event,internal=True,headers=event_headers))
+        expect(200,request('POST','/internal/v1/stalwart/events',event,internal=True,headers=event_headers))
         assert sql(f"SELECT count(*) FROM delivery_events WHERE email_id='{live}';") == '1'
         payload = expect(200,request('GET',f'/v1/emails/{live}',key=live_key))['data']
         assert payload['status']=='bounced' and payload['events'][0]['data']['emailId']==live
@@ -221,15 +225,16 @@ def main():
         else:
             # Validate strict production startup without running any provider worker.
             run(['stop', 'worker'])
-            environment.update(APP_ENV='production', DOMAIN_PROVIDER='ses', OBJECT_STORAGE_PROVIDER='r2', ACCOUNT_EMAIL_FROM='',
-                SES_CONFIGURATION_SET='unused', TURNSTILE_SITE_KEY='unused-site-key', TURNSTILE_SECRET_KEY='unused-secret-key-that-is-long-enough',
-                SES_EVENTS_QUEUE_URL='https://sqs.ap-southeast-1.amazonaws.com/000000000000/unused',
-                SES_EVENTS_TOPIC_ARN='arn:aws:sns:ap-southeast-1:000000000000:unused',
+            environment.update(APP_ENV='production', OBJECT_STORAGE_PROVIDER='r2', ACCOUNT_EMAIL_FROM='',
+                TURNSTILE_SITE_KEY='unused-site-key', TURNSTILE_SECRET_KEY='unused-secret-key-that-is-long-enough',
+                STALWART_API_URL='http://stalwart:8080', STALWART_API_TOKEN=secrets.token_hex(32),
+                MTA_PUBLIC_HOST='smtp.integration.invalid', MTA_PUBLIC_IPV4='192.0.2.1',
+                SMTP_HOST='smtp.integration.invalid', SMTP_USERNAME='mailer', SMTP_PASSWORD=secrets.token_hex(32), SMTP_HELO_NAME='smtp.integration.invalid',
                 OBJECT_STORAGE_ENDPOINT='http://127.0.0.1:9', OBJECT_STORAGE_BUCKET='unused',
                 OBJECT_STORAGE_ACCESS_KEY_ID='unused', OBJECT_STORAGE_SECRET_ACCESS_KEY='unused')
             run(['up', '-d', '--no-build', '--wait', '--wait-timeout', '120', 'api', 'frontend'])
             expect(200, request('GET', '/readyz'))
-            expect(404, request('POST', '/internal/v1/ses/events', {}))
+            expect(404, request('POST', '/internal/v1/stalwart/events', {}))
             print('PASS: strict production API startup, migrations, authenticated NATS and private-route blocking', flush=True)
     finally:
         if not kept:

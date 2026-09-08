@@ -23,20 +23,21 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 cp .env.production.example "$temporary/test.env"
-for name in POSTGRES_PASSWORD NATS_PASSWORD EVENT_INGEST_TOKEN WEBHOOK_SIGNING_MASTER_KEY STALWART_WEBHOOK_TOKEN STALWART_WEBHOOK_SIGNING_KEY; do
+for name in POSTGRES_PASSWORD NATS_PASSWORD WEBHOOK_SIGNING_MASTER_KEY STALWART_API_TOKEN SMTP_PASSWORD STALWART_WEBHOOK_TOKEN STALWART_WEBHOOK_SIGNING_KEY; do
     value=$(openssl rand -hex 32)
     sed -i "s/^$name=\$/$name=$value/" "$temporary/test.env"
 done
-for name in CLOUDFLARE_TUNNEL_TOKEN TURNSTILE_SITE_KEY TURNSTILE_SECRET_KEY API_AWS_ACCESS_KEY_ID API_AWS_SECRET_ACCESS_KEY WORKER_AWS_ACCESS_KEY_ID WORKER_AWS_SECRET_ACCESS_KEY OBJECT_STORAGE_ACCESS_KEY_ID OBJECT_STORAGE_SECRET_ACCESS_KEY; do
+for name in CLOUDFLARE_TUNNEL_TOKEN TURNSTILE_SITE_KEY TURNSTILE_SECRET_KEY OBJECT_STORAGE_ACCESS_KEY_ID OBJECT_STORAGE_SECRET_ACCESS_KEY; do
     sed -i "s/^$name=\$/$name=unused-test-credential/" "$temporary/test.env"
 done
 cat >>"$temporary/test.env" <<'EOF'
-SES_EVENTS_QUEUE_URL=https://sqs.ap-southeast-1.amazonaws.com/000000000000/unused
-SES_EVENTS_TOPIC_ARN=arn:aws:sns:ap-southeast-1:000000000000:unused
 OBJECT_STORAGE_ENDPOINT=http://127.0.0.1:9
 OBJECT_STORAGE_BUCKET=unused
-SES_CONFIGURATION_SET=unused
 ACCOUNT_EMAIL_FROM=unused@example.com
+STALWART_API_URL=http://stalwart:8080
+SMTP_HOST=smtp.example.test
+SMTP_USERNAME=mailer
+SMTP_HELO_NAME=smtp.example.test
 IMAGE_TAG=deployment-smoke
 EOF
 # Override inherited shell values with these deliberately fake credentials.
@@ -57,14 +58,11 @@ status=$(compose exec -T api curl --silent --output /dev/null --write-out '%{htt
     http://127.0.0.1:8081/api/operationalz || true)
 test "$status" = 503
 status=$(compose exec -T api curl --silent --output /dev/null --write-out '%{http_code}' \
-    http://127.0.0.1:8081/api/internal/v1/ses/events || true)
-test "$status" = 404
-status=$(compose exec -T api curl --silent --output /dev/null --write-out '%{http_code}' \
     http://127.0.0.1:8081/api/internal/v1/stalwart/events || true)
 test "$status" = 404
 compose exec -T postgres psql --username mailer --dbname mailer --tuples-only \
     --command 'SELECT count(*) FROM _sqlx_migrations;' | grep -Eq '[1-9][0-9]*'
-test "$(compose exec -T postgres psql -At --username mailer --dbname mailer --command "SELECT COALESCE(default_provider,'environment')||':'||smtp_paused::text||':'||smtp_daily_email_limit||':'||ses_rollback_enabled::text FROM delivery_operator_controls WHERE singleton=true")" = 'environment:true:100:true'
+test "$(compose exec -T postgres psql -At --username mailer --dbname mailer --command "SELECT smtp_paused::text||':'||smtp_daily_email_limit FROM delivery_operator_controls WHERE singleton=true")" = 'false:100'
 test "$(compose exec -T postgres psql -At --username mailer --dbname mailer --command "WITH first AS (INSERT INTO delivery_provider_daily_usage(usage_date,provider,emails_admitted) VALUES(current_date,'smtp',1) ON CONFLICT(usage_date,provider) DO UPDATE SET emails_admitted=delivery_provider_daily_usage.emails_admitted+1 WHERE delivery_provider_daily_usage.emails_admitted<1 RETURNING 1) SELECT count(*) FROM first")" = 1
 test "$(compose exec -T postgres psql -At --username mailer --dbname mailer --command "WITH capped AS (INSERT INTO delivery_provider_daily_usage(usage_date,provider,emails_admitted) VALUES(current_date,'smtp',1) ON CONFLICT(usage_date,provider) DO UPDATE SET emails_admitted=delivery_provider_daily_usage.emails_admitted+1 WHERE delivery_provider_daily_usage.emails_admitted<1 RETURNING 1) SELECT count(*) FROM capped")" = 0
 
@@ -137,4 +135,4 @@ test "$(compose exec -T postgres psql -At --username mailer --dbname mailer --co
 test "$(compose exec -T postgres psql -At --username mailer --dbname mailer --command "SELECT count(*) FROM delivery_events WHERE email_id='33333333-3333-4333-8333-333333333333'")" = 2
 test "$(compose exec -T postgres psql -At --username mailer --dbname mailer --command "SELECT emails_delivered FROM usage_counters WHERE workspace_id='22222222-2222-4222-8222-222222222222'")" = 1
 
-echo 'Real API, workspace containment, worker-staleness detection, atomic local failures, routing controls, caps, signed Stalwart events, replay safety, and Nginx isolation passed.'
+echo 'Real API, workspace containment, worker-staleness detection, atomic local failures, SMTP controls, caps, signed Stalwart events, replay safety, and Nginx isolation passed.'

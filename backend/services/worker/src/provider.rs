@@ -11,8 +11,6 @@ use lettre::{
 use std::time::Duration;
 
 pub(crate) struct DeliveryProviders {
-    ses: Option<aws_sdk_sesv2::Client>,
-    ses_configuration_set: Option<String>,
     smtp: Option<SmtpProvider>,
 }
 
@@ -23,27 +21,20 @@ struct SmtpProvider {
 }
 
 impl DeliveryProviders {
-    pub(crate) fn new(ses: Option<aws_sdk_sesv2::Client>, settings: &Settings) -> Result<Self> {
-        let smtp = match settings.smtp_host.as_deref() {
-            Some(host) => {
+    pub(crate) fn new(settings: &Settings) -> Result<Self> {
+        let smtp = match (
+            settings.smtp_host.as_deref(),
+            settings.smtp_username.as_ref(),
+            settings.smtp_password.as_ref(),
+            settings.smtp_helo_name.as_ref(),
+        ) {
+            (Some(host), Some(username), Some(password), Some(helo_name)) => {
                 let builder = match settings.smtp_security.as_str() {
                     "implicit_tls" => AsyncSmtpTransport::<Tokio1Executor>::relay(host),
                     "starttls" => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host),
                     _ => unreachable!("configuration validates SMTP_SECURITY"),
                 }
                 .context("unable to configure SMTP TLS")?;
-                let username = settings
-                    .smtp_username
-                    .as_ref()
-                    .context("SMTP_USERNAME is required when SMTP_HOST is set")?;
-                let password = settings
-                    .smtp_password
-                    .as_ref()
-                    .context("SMTP_PASSWORD is required when SMTP_HOST is set")?;
-                let helo_name = settings
-                    .smtp_helo_name
-                    .as_ref()
-                    .context("SMTP_HELO_NAME is required when SMTP_HOST is set")?;
                 Some(SmtpProvider {
                     transport: builder
                         .port(settings.smtp_port)
@@ -70,46 +61,16 @@ impl DeliveryProviders {
                     return_path_prefix: settings.mta_return_path_prefix.clone(),
                 })
             }
-            None => None,
+            _ => None,
         };
-        Ok(Self {
-            ses,
-            ses_configuration_set: settings.ses_configuration_set.clone(),
-            smtp,
-        })
+        Ok(Self { smtp })
     }
 
-    pub(crate) async fn submit(
-        &self,
-        provider: &str,
-        email: &Email,
-    ) -> Result<String, ProviderFailure> {
-        match provider {
-            "ses" => {
-                let client = self.ses.as_ref().ok_or_else(|| {
-                    ProviderFailure::Permanent("SES delivery provider is unavailable".into())
-                })?;
-                super::delivery::send_ses(client, email, self.ses_configuration_set.as_deref())
-                    .await
-            }
-            "smtp" => {
-                let smtp = self.smtp.as_ref().ok_or_else(|| {
-                    ProviderFailure::Permanent("SMTP delivery provider is unavailable".into())
-                })?;
-                smtp.submit(email).await
-            }
-            _ => Err(ProviderFailure::Permanent(format!(
-                "Unknown delivery provider: {provider}"
-            ))),
-        }
-    }
-
-    pub(crate) fn is_available(&self, provider: &str) -> bool {
-        match provider {
-            "ses" => self.ses.is_some(),
-            "smtp" => self.smtp.is_some(),
-            _ => false,
-        }
+    pub(crate) async fn submit(&self, email: &Email) -> Result<String, ProviderFailure> {
+        let smtp = self.smtp.as_ref().ok_or_else(|| {
+            ProviderFailure::Permanent("SMTP delivery provider is unavailable".into())
+        })?;
+        smtp.submit(email).await
     }
 }
 

@@ -1,5 +1,4 @@
 use super::AppState;
-use aws_sdk_sesv2::error::ProvideErrorMetadata;
 use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
@@ -113,151 +112,50 @@ async fn add_domain(
             )
         }
     }
-    let (mut records, provider_domain_id, signature_id, selector, provider_status) = match state
-        .domain_provider
-        .as_str()
-    {
-        "ses" => {
-            let Some(ses) = &state.ses else {
-                return error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "domain_provider_unavailable",
-                    "Domain verification is not configured in this environment",
-                );
-            };
-            let dkim_tokens = match ses
-                .create_email_identity()
-                .email_identity(&domain)
-                .send()
-                .await
-            {
-                Ok(identity) => identity
-                    .dkim_attributes()
-                    .map(|v| v.tokens().to_vec())
-                    .unwrap_or_default(),
-                Err(error_value)
-                    if error_value.as_service_error().and_then(|v| v.code())
-                        == Some("AlreadyExistsException") =>
-                {
-                    // Reconcile an earlier successful provider call whose DB commit failed.
-                    match ses
-                        .get_email_identity()
-                        .email_identity(&domain)
-                        .send()
-                        .await
-                    {
-                        Ok(identity) => identity
-                            .dkim_attributes()
-                            .map(|v| v.tokens().to_vec())
-                            .unwrap_or_default(),
-                        Err(_) => {
-                            return error(
-                                StatusCode::BAD_GATEWAY,
-                                "provider_error",
-                                "Unable to reconcile sending identity",
-                            )
-                        }
-                    }
-                }
-                Err(_) => {
-                    return error(
-                        StatusCode::BAD_GATEWAY,
-                        "provider_error",
-                        "Unable to create sending identity",
-                    )
-                }
-            };
-            if dkim_tokens.is_empty() {
-                return error(
-                    StatusCode::BAD_GATEWAY,
-                    "provider_error",
-                    "The provider did not return DKIM records",
-                );
-            }
-            let mail_from = format!("bounce.{domain}");
-            if let Err(provider_error) = ses
-                .put_email_identity_mail_from_attributes()
-                .email_identity(&domain)
-                .mail_from_domain(&mail_from)
-                .send()
-                .await
-            {
-                tracing::error!(error = %provider_error, domain = %domain, "SES MAIL FROM configuration failed");
-                return error(
-                    StatusCode::BAD_GATEWAY,
-                    "provider_error",
-                    "Unable to configure the sending identity",
-                );
-            }
-            (
-                dns_records(&domain, &state.aws_region, &dkim_tokens),
-                None,
-                None,
-                None,
-                "pending",
-            )
-        }
-        "stalwart" => {
-            let Some(client) = &state.stalwart else {
-                return error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "domain_provider_unavailable",
-                    "Stalwart domain provisioning is not configured",
-                );
-            };
-            let return_path = format!("{}.{}", state.mta_return_path_prefix, domain);
-            let provisioned = match client.provision(&domain, &return_path).await {
-                Ok(value) => value,
-                Err(provider_error) => {
-                    tracing::error!(error=%provider_error, domain=%domain, "Stalwart domain provisioning failed");
-                    return error(
-                        StatusCode::BAD_GATEWAY,
-                        "provider_error",
-                        "Unable to provision the sending domain",
-                    );
-                }
-            };
-            let (Some(host), Some(ipv4)) = (&state.mta_public_host, &state.mta_public_ipv4) else {
-                return error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "domain_provider_unavailable",
-                    "MTA DNS settings are incomplete",
-                );
-            };
-            let records = stalwart_dns_records(
-                &domain,
-                &state.mta_return_path_prefix,
-                host,
-                ipv4,
-                &provisioned.selector,
-                &provisioned.dkim_value,
-            );
-            (
-                records,
-                Some(provisioned.domain_id),
-                Some(provisioned.signature_id),
-                Some(provisioned.selector),
-                "verified",
-            )
-        }
-        _ => {
+    let Some(client) = &state.stalwart else {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "domain_provider_unavailable",
+            "Stalwart domain provisioning is not configured",
+        );
+    };
+    let return_path = format!("{}.{}", state.mta_return_path_prefix, domain);
+    let provisioned = match client.provision(&domain, &return_path).await {
+        Ok(value) => value,
+        Err(provider_error) => {
+            tracing::error!(error=%provider_error, domain=%domain, "Stalwart domain provisioning failed");
             return error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "domain_provider_unavailable",
-                "Domain verification is disabled",
-            )
+                StatusCode::BAD_GATEWAY,
+                "provider_error",
+                "Unable to provision the sending domain",
+            );
         }
     };
+    let (Some(host), Some(ipv4)) = (&state.mta_public_host, &state.mta_public_ipv4) else {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "domain_provider_unavailable",
+            "MTA DNS settings are incomplete",
+        );
+    };
+    let mut records = stalwart_dns_records(
+        &domain,
+        &state.mta_return_path_prefix,
+        host,
+        ipv4,
+        &provisioned.selector,
+        &provisioned.dkim_value,
+    );
     let row = match sqlx::query(
         "INSERT INTO domains (workspace_id, name, management_provider, provider_status, provider_domain_id, active_dkim_signature_id, active_dkim_selector) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, status, created_at",
     )
     .bind(workspace_id)
     .bind(&domain)
-    .bind(&state.domain_provider)
-    .bind(provider_status)
-    .bind(provider_domain_id)
-    .bind(signature_id)
-    .bind(selector)
+    .bind("stalwart")
+    .bind("verified")
+    .bind(&provisioned.domain_id)
+    .bind(&provisioned.signature_id)
+    .bind(&provisioned.selector)
     .fetch_one(&mut *tx)
     .await
     {
@@ -301,7 +199,7 @@ async fn add_domain(
         id: domain_id,
         domain,
         status: row.get("status"),
-        provider: state.domain_provider.clone(),
+        provider: "stalwart".into(),
         verified_at: None,
         created_at: row
             .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
@@ -325,7 +223,7 @@ async fn add_domain(
             Vec::new()
         },
     };
-    (StatusCode::CREATED, Json(json!({"data": view}))).into_response()
+    (StatusCode::CREATED, Json(json!({ "data": view }))).into_response()
 }
 
 async fn list_domains(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -347,7 +245,7 @@ async fn list_domains(State(state): State<AppState>, headers: HeaderMap) -> Resp
             }
         }
     }
-    Json(json!({"data": domains})).into_response()
+    Json(json!({ "data": domains })).into_response()
 }
 
 async fn get_domain(
@@ -361,7 +259,7 @@ async fn get_domain(
     };
     let row = match sqlx::query("SELECT id, name, status, management_provider, verified_at, created_at FROM domains WHERE id = $1 AND workspace_id = $2 AND status <> 'disabled'").bind(id).bind(workspace_id).fetch_optional(&state.db).await { Ok(Some(value)) => value, Ok(None) => return error(StatusCode::NOT_FOUND, "domain_not_found", "Domain was not found"), Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to load domain") };
     match domain_view(&state, row).await {
-        Ok(view) => Json(json!({"data": view})).into_response(),
+        Ok(view) => Json(json!({ "data": view })).into_response(),
         Err(_) => error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal_error",
@@ -406,8 +304,6 @@ async fn delete_domain(
             }
         }
     }
-    // SES identities may be shared with another application, so disabling a
-    // Mailer domain never deletes or changes the SES identity.
     match sqlx::query("UPDATE domains SET status = 'disabled', updated_at = now() WHERE id = $1 AND workspace_id = $2 AND status <> 'disabled'").bind(id).bind(workspace_id).execute(&state.db).await { Ok(result) if result.rows_affected() == 1 => Json(json!({"data": {"disabled": true}})).into_response(), Ok(_) => error(StatusCode::NOT_FOUND, "domain_not_found", "Domain was not found"), Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to remove domain") }
 }
 
@@ -566,27 +462,15 @@ async fn refresh_verification(
     id: Uuid,
     name: &str,
 ) -> anyhow::Result<(bool, bool)> {
+    ensure_provisioned(state, id, name).await?;
     let provider_row =
         sqlx::query("SELECT management_provider, provider_domain_id, previous_dkim_signature_id, previous_dkim_record_name FROM domains WHERE id=$1")
             .bind(id)
             .fetch_one(&state.db)
             .await?;
-    let provider: String = provider_row.get("management_provider");
-    let provider_verified = match provider.as_str() {
-        "ses" => state
-            .ses
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("SES domain provider is unavailable"))?
-            .get_email_identity()
-            .email_identity(name)
-            .send()
-            .await?
-            .verified_for_sending_status(),
-        "stalwart" => provider_row
-            .get::<Option<String>, _>("provider_domain_id")
-            .is_some(),
-        _ => false,
-    };
+    let provider_verified = provider_row
+        .get::<Option<String>, _>("provider_domain_id")
+        .is_some();
     let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
     let expected = sqlx::query("SELECT id, record_type, name, value, required_for_sending FROM domain_dns_records WHERE domain_id = $1")
         .bind(id)
@@ -634,24 +518,21 @@ async fn refresh_verification(
         .bind(id)
         .execute(&state.db)
         .await?;
-        if provider == "stalwart" {
-            let previous_signature: Option<String> = provider_row.get("previous_dkim_signature_id");
-            if let (Some(client), Some(previous_signature)) = (&state.stalwart, previous_signature)
-            {
-                match client.destroy_signature(&previous_signature).await {
-                    Ok(()) => {
-                        let previous_record: Option<String> =
-                            provider_row.get("previous_dkim_record_name");
-                        if let Some(previous_record) = previous_record {
-                            sqlx::query("DELETE FROM domain_dns_records WHERE domain_id=$1 AND record_type='TXT' AND name=$2")
+        let previous_signature: Option<String> = provider_row.get("previous_dkim_signature_id");
+        if let (Some(client), Some(previous_signature)) = (&state.stalwart, previous_signature) {
+            match client.destroy_signature(&previous_signature).await {
+                Ok(()) => {
+                    let previous_record: Option<String> =
+                        provider_row.get("previous_dkim_record_name");
+                    if let Some(previous_record) = previous_record {
+                        sqlx::query("DELETE FROM domain_dns_records WHERE domain_id=$1 AND record_type='TXT' AND name=$2")
                                 .bind(id).bind(previous_record).execute(&state.db).await?;
-                        }
-                        sqlx::query("UPDATE domains SET previous_dkim_signature_id=NULL,previous_dkim_record_name=NULL WHERE id=$1")
+                    }
+                    sqlx::query("UPDATE domains SET previous_dkim_signature_id=NULL,previous_dkim_record_name=NULL WHERE id=$1")
                             .bind(id).execute(&state.db).await?;
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, domain=%name, "unable to retire previous Stalwart DKIM signature; verifier will retry")
-                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, domain=%name, "unable to retire previous Stalwart DKIM signature; verifier will retry")
                 }
             }
         }
@@ -659,10 +540,71 @@ async fn refresh_verification(
     Ok((provider_verified, required_dns_verified))
 }
 
-pub(crate) async fn run_verifier(state: AppState) {
-    if state.domain_provider == "disabled" {
-        return;
+async fn ensure_provisioned(state: &AppState, id: Uuid, name: &str) -> anyhow::Result<()> {
+    let mut tx = state.db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("domain-provision:{id}"))
+        .execute(&mut *tx)
+        .await?;
+    let existing = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT provider_domain_id FROM domains WHERE id=$1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if existing.is_some() {
+        tx.commit().await?;
+        return Ok(());
     }
+    let client = state
+        .stalwart
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Stalwart domain provisioning is unavailable"))?;
+    let host = state
+        .mta_public_host
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("MTA_PUBLIC_HOST is missing"))?;
+    let ipv4 = state
+        .mta_public_ipv4
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("MTA_PUBLIC_IPV4 is missing"))?;
+    let return_path = format!("{}.{name}", state.mta_return_path_prefix);
+    let provisioned = client.provision(name, &return_path).await?;
+    let records = stalwart_dns_records(
+        name,
+        &state.mta_return_path_prefix,
+        host,
+        ipv4,
+        &provisioned.selector,
+        &provisioned.dkim_value,
+    );
+    sqlx::query("DELETE FROM domain_dns_records WHERE domain_id=$1 AND name<>$2")
+        .bind(id)
+        .bind(format!("_mailer-verification.{name}"))
+        .execute(&mut *tx)
+        .await?;
+    for (record_type, record_name, value, required) in records {
+        sqlx::query("INSERT INTO domain_dns_records(domain_id,record_type,name,value,required_for_sending) VALUES($1,$2,$3,$4,$5) ON CONFLICT(domain_id,record_type,name) DO UPDATE SET value=EXCLUDED.value,required_for_sending=EXCLUDED.required_for_sending,status='pending',last_checked_at=NULL")
+            .bind(id)
+            .bind(record_type)
+            .bind(record_name)
+            .bind(value)
+            .bind(required)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query("UPDATE domains SET management_provider='stalwart',provider_status='verified',provider_domain_id=$1,active_dkim_signature_id=$2,active_dkim_selector=$3,status='pending',verified_at=NULL,updated_at=now() WHERE id=$4")
+        .bind(provisioned.domain_id)
+        .bind(provisioned.signature_id)
+        .bind(provisioned.selector)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub(crate) async fn run_verifier(state: AppState) {
     let mut timer = tokio::time::interval(Duration::from_secs(30));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -774,43 +716,6 @@ async fn dns_record_exists(
         }),
         _ => true,
     }
-}
-
-fn dns_records(
-    domain: &str,
-    region: &str,
-    dkim_tokens: &[String],
-) -> Vec<(String, String, String, bool)> {
-    let mut records: Vec<_> = dkim_tokens
-        .iter()
-        .map(|token| {
-            (
-                "CNAME".into(),
-                format!("{token}._domainkey.{domain}"),
-                format!("{token}.dkim.amazonses.com"),
-                true,
-            )
-        })
-        .collect();
-    records.push((
-        "MX".into(),
-        format!("bounce.{domain}"),
-        format!("feedback-smtp.{region}.amazonses.com"),
-        true,
-    ));
-    records.push((
-        "SPF".into(),
-        format!("bounce.{domain}"),
-        "v=spf1 include:amazonses.com ~all".into(),
-        true,
-    ));
-    records.push((
-        "DMARC".into(),
-        format!("_dmarc.{domain}"),
-        "v=DMARC1; p=none".into(),
-        false,
-    ));
-    records
 }
 
 fn stalwart_dns_records(

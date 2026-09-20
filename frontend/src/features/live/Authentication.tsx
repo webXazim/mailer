@@ -60,7 +60,7 @@ export function Authentication({ signedIn }: { signedIn: (session: Session) => v
     })
   }
 
-  const title = mode === 'signup' ? 'Create your workspace' : mode === 'forgot' ? 'Reset your password' : mode === 'resend' ? 'Resend verification code' : mode === 'reset' ? 'Choose a new password' : mode === 'verify' ? 'Verify your email' : 'Welcome back'
+  const title = mode === 'signup' ? 'Create your account' : mode === 'forgot' ? 'Reset your password' : mode === 'resend' ? 'Resend verification code' : mode === 'reset' ? 'Choose a new password' : mode === 'verify' ? 'Verify your email' : 'Welcome back'
   const description = mode === 'signup' ? 'Start in safe test mode and connect the API before enabling production delivery.' : mode === 'forgot' ? 'We will queue reset instructions for the address if an account exists.' : mode === 'resend' ? 'Enter the address you used when creating your account.' : mode === 'reset' ? 'Use at least 12 characters for your new password.' : mode === 'verify' ? 'Enter the six-digit code sent to your email address.' : 'Sign in to your CS Mailer developer console.'
 
   return <main className="auth-page">
@@ -83,11 +83,11 @@ export function Authentication({ signedIn }: { signedIn: (session: Session) => v
           {mode === 'signup' && <><label className="checkbox-field auth-consent"><input type="checkbox" required /><span>I will use CS Mailer for permission-based transactional email and handle delivery failures responsibly.</span></label><Turnstile siteKey={config.result?.data.turnstileSiteKey} token={setTurnstileToken} /><p className="auth-legal">By creating an account you agree to the <button type="button" onClick={() => navigate('/terms')}>Terms of Service</button> and acknowledge the <button type="button" onClick={() => navigate('/privacy')}>Privacy Policy</button>.</p></>}
           {mode === 'verify' && verificationQueued && <Notice tone="info">Your account was created and the verification message was queued. Delivery is not yet confirmed.</Notice>}
           <ErrorNotice error={action.error || config.error} />{notice && <Notice tone="success">{notice}</Notice>}
-          <Submit busy={action.busy} className="auth-submit">{mode === 'signup' ? 'Create workspace' : mode === 'forgot' ? 'Send reset instructions' : mode === 'resend' ? 'Resend verification code' : mode === 'verify' ? 'Verify account' : mode === 'reset' ? 'Update password' : 'Sign in'}</Submit>
+          <Submit busy={action.busy} className="auth-submit">{mode === 'signup' ? 'Create account' : mode === 'forgot' ? 'Send reset instructions' : mode === 'resend' ? 'Resend verification code' : mode === 'verify' ? 'Verify account' : mode === 'reset' ? 'Update password' : 'Sign in'}</Submit>
         </form>
         <div className="auth-links"><button className="text-link" onClick={() => navigate(mode === 'login' ? '/signup' : mode === 'resend' && verificationEmail ? `/verify-email?email=${encodeURIComponent(verificationEmail)}` : '/login')}>{mode === 'login' ? 'Create a CS Mailer account' : mode === 'resend' && verificationEmail ? 'Back to code entry' : 'Back to sign in'}</button>{mode === 'login' && <>{config.result?.data.passwordRecovery && <button className="text-link" onClick={() => navigate('/forgot-password')}>Forgot password?</button>}{config.result?.data.emailVerification && <button className="text-link" onClick={() => navigate('/resend-verification')}>Resend verification</button>}</>}{mode === 'verify' && <button className="text-link" onClick={() => navigate(`/resend-verification?email=${encodeURIComponent(verificationEmail)}`)}>Send a new code</button>}</div>
       </div>
-      <p className="auth-main__footnote">New workspaces begin in test mode · Verify a sender domain to unlock production</p>
+      <p className="auth-main__footnote">New accounts begin in test mode · Verify a sender domain to unlock production</p>
     </section>
   </main>
 }

@@ -15,7 +15,7 @@ import './console.css'
 
 type NavItem = { path: string; label: string; description: string; icon: typeof Activity; admin?: boolean; group: 'Operate' | 'Configure' | 'Develop' }
 const navigation: NavItem[] = [
-  { path: '/overview', label: 'Overview', description: 'Live workspace and delivery health.', icon: Activity, group: 'Operate' },
+  { path: '/overview', label: 'Overview', description: 'Live delivery and sending health.', icon: Activity, group: 'Operate' },
   { path: '/emails', label: 'Emails', description: 'Track every accepted message and delivery outcome.', icon: Mail, group: 'Operate' },
   { path: '/domains', label: 'Domains', description: 'Configure sender identity and DNS readiness.', icon: Globe2, group: 'Configure' },
   { path: '/api-keys', label: 'API keys', description: 'Issue scoped credentials for server-side integrations.', icon: KeyRound, admin: true, group: 'Configure' },
@@ -80,7 +80,7 @@ export default function Console() {
     document.title = `CS Mailer · ${names[location.pathname] ?? consoleName ?? 'Developer Email Infrastructure'}`
   }, [location.pathname])
 
-  if (loading) return <main className="boot-screen"><div className="boot-mark"><img src="/cs-mailer-logo.png" alt="" /></div><BrandLogo /><p><span />Connecting to your workspace</p></main>
+  if (loading) return <main className="boot-screen"><div className="boot-mark"><img src="/cs-mailer-logo.png" alt="" /></div><BrandLogo /><p><span />Connecting to CS Mailer</p></main>
   if (location.pathname === '/') return <LandingPage signedIn={Boolean(session)} signIn={() => navigate('/login')} createAccount={() => navigate(session ? '/overview' : '/signup')} />
   if (location.pathname === '/terms') return <LegalPage kind="terms" />
   if (location.pathname === '/privacy') return <LegalPage kind="privacy" />
@@ -115,7 +115,6 @@ export default function Console() {
   return <div className="app-shell">
     <aside className={`app-sidebar ${mobileOpen ? 'is-open' : ''}`}>
       <div className="sidebar-brand"><button className="brand-button" onClick={() => go('/overview')}><BrandLogo /></button><button className="icon-button sidebar-close" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X size={17} /></button></div>
-      <div className="workspace-card"><span className="workspace-avatar">{session.workspace.name.slice(0, 1).toUpperCase()}</span><div><small>Workspace</small><strong>{session.workspace.name}</strong></div><ChevronRight size={15} /></div>
       <nav className="sidebar-nav" aria-label="Primary navigation">{groupedNavigation.map(group => <div className="nav-group" key={group.group}><span>{group.group}</span>{group.items.map(item => <button className={route.path === item.path ? 'is-active' : ''} key={item.path} onClick={() => go(item.path)}><item.icon size={16} /><b>{item.label}</b>{route.path === item.path && <i />}</button>)}</div>)}</nav>
       <div className={`sidebar-live ${online ? '' : 'is-offline'}`.trim()}><span><i />{online ? 'Console sync active' : 'Offline'}</span><small>{online ? 'Views refresh in the background.' : 'Showing cached data until connection returns.'}</small></div>
       <div className="sidebar-account"><button onClick={() => setProfileOpen(value => !value)} aria-expanded={profileOpen}><span className="user-avatar"><UserRound size={15} /></span><span><strong>{session.user.name}</strong><small>{session.user.email}</small></span><ChevronRight className={profileOpen ? 'is-open' : ''} size={15} /></button>{profileOpen && <div className="account-popover"><div><small>Role</small><strong>{session.user.role}</strong></div><button onClick={() => void signOut()}><LogOut size={14} />Sign out</button></div>}</div>
@@ -123,7 +122,7 @@ export default function Console() {
 
     <main className="app-main">
       <header className="app-topbar"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu size={18} /></button><div className="topbar-breadcrumb"><span>CS Mailer</span><ChevronRight size={13} /><strong>{route.label}</strong></div><div className="topbar-actions"><span className={`connection-pill ${online ? 'is-online' : 'is-offline'}`} role="status"><i />{online ? 'Live' : 'Offline'}</span><div className="environment-switch" aria-label="Environment selector"><button className={environment === 'test' ? 'is-active' : ''} onClick={() => changeEnvironment('test')}><i />Test</button><button className={environment === 'production' ? 'is-active' : ''} disabled={!session.workspace.production_enabled} title={!session.workspace.production_enabled ? 'Verify a sender domain to unlock production' : undefined} onClick={() => changeEnvironment('production')}><i />Production</button></div></div></header>
-      <div className="app-page">{!online && <div className="connectivity-warning" role="status"><strong>Connection lost.</strong><span>CS Mailer is keeping the current view available and will refresh changed data automatically when you reconnect.</span></div>}<section className="page-heading"><div><div className="page-heading__eyebrow"><span>{session.workspace.name}</span><EnvironmentPillInternal environment={environment} /></div><h1>{route.label}</h1><p>{route.description}</p></div>{admin && route.path !== '/overview' && <button className="button button--primary" disabled={environment === 'production' && session.workspace.sending_paused} onClick={() => setSendOpen(true)}><Send size={15} />Send email</button>}</section>
+      <div className="app-page">{!online && <div className="connectivity-warning" role="status"><strong>Connection lost.</strong><span>CS Mailer is keeping the current view available and will refresh changed data automatically when you reconnect.</span></div>}<section className="page-heading"><div><div className="page-heading__eyebrow"><EnvironmentPillInternal environment={environment} /></div><h1>{route.label}</h1><p>{route.description}</p></div>{admin && route.path !== '/overview' && <button className="button button--primary" disabled={environment === 'production' && session.workspace.sending_paused} onClick={() => setSendOpen(true)}><Send size={15} />Send email</button>}</section>
         <ErrorNotice error={sessionError} />{session.workspace.sending_paused && <div className="global-warning"><ShieldBan size={17} /><div><strong>Production sending is paused</strong><p>{session.workspace.sending_pause_reason || 'Rotate affected API keys and contact the operator before resuming.'}</p></div></div>}
         <div className="route-content" key={route.path}>{page}</div>
         <footer className="app-footer"><span>CS Mailer · Developer email infrastructure</span><div><button onClick={() => navigate('/privacy')}>Privacy</button><button onClick={() => navigate('/terms')}>Terms</button></div></footer>

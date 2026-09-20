@@ -1,38 +1,35 @@
-# CrescentSphere Mailer
+# CS Mailer frontend
 
-Production-oriented React console for the CrescentSphere transactional developer email platform. Hosted mailbox features remain a separate future application and deployment.
+Production React/Vite interface for **CS Mailer**, the CrescentSphere developer email platform. The Rust/API contract is intentionally unchanged by this frontend upgrade.
 
-## Local development
+## Included frontend
 
-```bash
-sh manage install
-sh manage frontend-dev
-```
+- Developer-mail public homepage, Terms of Service, Privacy Policy, and branded 404/error states.
+- Authentication, verification, password recovery, and Cloudflare Turnstile integration using the existing API.
+- Responsive console for overview, email activity/details, sender domains/DNS, API keys, webhooks, suppressions, and developer guidance.
+- The supplied transparent CrescentSphere logo is the primary CS Mailer mark and is also used to derive transparent application icons.
+- Shared resource cache with targeted invalidation, adaptive/background polling, stale-request cancellation, focus/reconnect refresh, and optimistic mutations where safe. Normal console actions update only affected React data; they do not reload the browser document.
+- Offline awareness, request timeouts, accessible drawers/dialogs, keyboard focus handling, reduced-motion support, and CSP-compatible system font stacks.
 
-Open `http://localhost:5173/`. Navigation uses hash routes so the current static deployment works without server-side route configuration.
-
-## Verification
-
-```bash
-sh manage frontend-build
-```
-
-## Docker
+## Development
 
 ```bash
-sh manage dev
+npm ci
+npm run verify:source
+npm run dev
 ```
 
-The Compose stack serves the compiled app through Nginx at
-`http://localhost:8081` and exposes `GET /healthz` for container checks.
+The API base defaults to `/api`. Override it with `VITE_API_URL` when required.
 
-## Integration boundary
+## Production verification
 
-The active console is in `src/features/live/` and uses the typed API client for sessions, verified public signup, password reset, domains, keys, sending, activity, webhooks, and suppressions. `App.tsx` mounts this console; older feature/fixture files remain unmounted design references. No billing, MFA, template, or team-management screens are exposed. Server permissions remain authoritative. Test/production is selected explicitly, and test sends never send recipient email.
+```bash
+npm ci
+npm run verify:source
+npm run typecheck
+npm run build
+```
 
-## Backend
+`verify:source` checks pinned dependencies/lockfile consistency, required brand assets, and guards against accidental browser-document reload patterns. The Docker build runs this verification before the Vite production build.
 
-The Rust/Axum backend lives in [`../backend/`](../backend/README.md). It owns the
-API and worker service boundaries, PostgreSQL and NATS JetStream services,
-validated configuration, request tracing, health endpoints, delivery, and
-production deployment tooling.
+For the production compose file, the frontend is built with `nginx.production.conf`, which serves the SPA on the shared API network namespace and proxies `/api/` to the existing Rust service.

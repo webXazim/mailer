@@ -5,7 +5,7 @@ ENV VITE_API_URL=$VITE_API_URL
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-RUN npm run build
+RUN npm run verify:source && npm run build
 
 FROM nginx:1.27-alpine
 ARG NGINX_CONFIG=nginx.conf

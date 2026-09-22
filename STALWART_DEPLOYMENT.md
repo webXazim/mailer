@@ -12,14 +12,14 @@ The following must already be true:
 - `152.53.178.165` has PTR `smtp.crescentsphere.com`.
 - Netcup's default mail-block firewall policy has been deleted.
 - Outbound IPv4 TCP 25 works.
-- Host ports 25, 465, 587 and 8088 are unused.
+- Host ports 25, 465, 587, 993 and 8088 are unused.
 
 Run:
 
 ```bash
 sh manage stalwart-init
 sh manage stalwart-network-check
-sudo ss -ltnp | grep -E ':(25|465|587|8088)\b' || true
+sudo ss -ltnp | grep -E ':(25|465|587|993|8088)\b' || true
 sh manage stalwart-up
 sh manage stalwart-status
 ```

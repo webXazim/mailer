@@ -4,6 +4,15 @@ Mailer onboards and verifies sending domains through the independent Stalwart MT
 Stalwart stores each domain and its private RSA DKIM key. Mailer stores only the
 public DNS value and Stalwart object identifiers.
 
+Stalwart is also used by CS Mail for business mailboxes. Mailer must never
+adopt an existing Stalwart domain based on its name: it may belong to CS Mail
+or be managed by an operator. New Mailer domains carry a Mailer ownership
+description. A retry may reconcile only a domain with that exact description;
+an unmarked existing domain fails closed. An older Mailer row without a
+provider domain ID may need an operator ownership review and explicit
+migration before it can be re-provisioned. Do not remove or edit the other
+product's domain to clear the conflict.
+
 ## One-time Stalwart setup
 
 1. Start the independent stack with `sh manage stalwart-up`. It creates the
@@ -43,7 +52,7 @@ In **Settings > MTA > Session > AUTH Stage**, use:
 
 - **Require Authentication**: one ELSE expression, `listener != 'smtp'`.
 - **Must match sender**:
-  - IF `eq_ignore_case(authenticated_as, 'mailer-submit') || eq_ignore_case(authenticated_as, 'mailer-submit@mailer.crescentsphere.com')`
+  - IF `eq_ignore_case(authenticated_as, 'mailer-submit') || eq_ignore_case(authenticated_as, 'mailer-submit@mailer.crescentsphere.com') || eq_ignore_case(authenticated_as, 'cs-mail-submit') || eq_ignore_case(authenticated_as, 'cs-mail-submit@svc.crescentsphere.com')`
   - THEN `false`
   - ELSE `true`
 - **Allowed Mechanisms**:
@@ -53,20 +62,27 @@ In **Settings > MTA > Session > AUTH Stage**, use:
 - **Maximum failures**: `3`.
 - **Wait after failure**: `5s`.
 
-The narrow **Must match sender** exception is necessary because one Mailer
-service identity submits for many verified customer domains. Every other SMTP
-principal must still match its sender. Never set both the exception and ELSE to
-`false`, because that disables sender matching for every authenticated account.
+The two service identities submit for their respective verified customer
+domains. Every other SMTP principal must still match its sender. Never set
+both the exception and ELSE to `false`, because that disables sender matching
+for every authenticated account.
 
 In **Settings > MTA > Session > MAIL FROM Stage > Sender is allowed**, put the
 same Mailer identity condition first:
 
 - IF `eq_ignore_case(authenticated_as, 'mailer-submit') || eq_ignore_case(authenticated_as, 'mailer-submit@mailer.crescentsphere.com')`
-- THEN `is_local_domain(sender_domain)`
-- ELSE `!is_empty(authenticated_as) || !key_exists('spam-block', sender_domain)`
+- THEN `starts_with(sender_domain, 'bounce.') && is_local_domain(sender_domain)`
+- IF `eq_ignore_case(authenticated_as, 'cs-mail-submit') || eq_ignore_case(authenticated_as, 'cs-mail-submit@svc.crescentsphere.com')`
+- THEN `is_local_address(sender) && !starts_with(sender_domain, 'bounce.')`
+- ELSE `(is_empty(authenticated_as) && !key_exists('spam-block', sender_domain)) || (!is_empty(authenticated_as) && is_local_address(sender))`
 
-This limits the Mailer worker to domains provisioned locally in Stalwart while
-preserving normal unauthenticated server-to-server delivery on port 25.
+This limits the Mailer worker to its bounce subdomains and CS Mail's relay to
+existing mailbox addresses, while preserving unauthenticated server-to-server
+delivery on port 25. Keep these rules synchronized with the CS Mail runbook.
+Test that each service credential is rejected when it tries to send for the
+other product's sender address before enabling customer traffic. The SMTP
+server's sender-domain policy is a separate control from each application's
+domain verification and must be checked after Stalwart upgrades.
 
 Use port 465 with implicit TLS for the Mailer worker. Do not offer `PLAIN` or
 `LOGIN` on a connection without TLS, do not offer AUTH on port 25, and do not

@@ -17,6 +17,8 @@ use sha2::{Digest, Sha256};
 use std::time::Duration;
 use uuid::Uuid;
 
+const MAILER_DOMAIN_MARKER: &str = "CrescentSphere Mailer managed domain";
+
 #[derive(Clone)]
 pub(crate) struct Client {
     endpoints: [String; 2],
@@ -44,12 +46,20 @@ impl Client {
         name: &str,
         return_path: &str,
     ) -> Result<ProvisionedDomain> {
-        let domain_id = match self.find_domain(name).await? {
-            Some(id) => {
-                self.update_domain(&id, true, Some(return_path)).await?;
-                id
+        // Stalwart is shared with CS Mail. A matching name alone does not
+        // prove ownership. The marker also makes a retry safe if domain
+        // creation succeeded but DKIM signature creation failed.
+        let domain_id = if let Some(id) = self.find_domain(name).await? {
+            let existing = self.get_one("x:Domain/get", &id).await?;
+            if existing.get("description").and_then(Value::as_str) != Some(MAILER_DOMAIN_MARKER) {
+                bail!(
+                    "Stalwart domain {name} already exists; operator ownership review is required"
+                );
             }
-            None => self.create_domain(name, return_path).await?,
+            self.update_domain(&id, true, Some(return_path)).await?;
+            id
+        } else {
+            self.create_domain(name, return_path).await?
         };
         if let Some(signature) = self.find_signature(&domain_id).await? {
             return Ok(signature);
@@ -118,6 +128,7 @@ impl Client {
                 "x:Domain/set",
                 json!({"create": {"mailer": {
                     "name": name,
+                    "description": MAILER_DOMAIN_MARKER,
                     "aliases": {(return_path): true},
                     "isEnabled": true,
                     "certificateManagement": {"@type": "Manual"},

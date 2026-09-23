@@ -119,8 +119,22 @@ async fn add_domain(
             "Stalwart domain provisioning is not configured",
         );
     };
+    let shared = state.stalwart_shared_domain.as_deref() == Some(domain.as_str());
+    if shared && state.stalwart_shared_workspace_id != Some(workspace_id) {
+        return error(
+            StatusCode::FORBIDDEN,
+            "shared_domain_workspace_mismatch",
+            "This domain is reserved for a different Mailer workspace",
+        );
+    }
     let return_path = format!("{}.{}", state.mta_return_path_prefix, domain);
-    let provisioned = match client.provision(&domain, &return_path).await {
+    let provisioned = match if shared {
+        client
+            .provision_shared(&domain, &return_path, workspace_id)
+            .await
+    } else {
+        client.provision(&domain, &return_path).await
+    } {
         Ok(value) => value,
         Err(provider_error) => {
             tracing::error!(error=%provider_error, domain=%domain, "Stalwart domain provisioning failed");
@@ -147,7 +161,7 @@ async fn add_domain(
         &provisioned.dkim_value,
     );
     let row = match sqlx::query(
-        "INSERT INTO domains (workspace_id, name, management_provider, provider_status, provider_domain_id, active_dkim_signature_id, active_dkim_selector) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, status, created_at",
+        "INSERT INTO domains (workspace_id, name, management_provider, provider_status, provider_domain_id, active_dkim_signature_id, active_dkim_selector, shared_stalwart_domain) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, status, created_at",
     )
     .bind(workspace_id)
     .bind(&domain)
@@ -156,6 +170,7 @@ async fn add_domain(
     .bind(&provisioned.domain_id)
     .bind(&provisioned.signature_id)
     .bind(&provisioned.selector)
+    .bind(shared)
     .fetch_one(&mut *tx)
     .await
     {
@@ -277,14 +292,14 @@ async fn delete_domain(
         Ok(value) => value,
         Err(response) => return response,
     };
-    let provider_row = match sqlx::query("SELECT management_provider, provider_domain_id FROM domains WHERE id=$1 AND workspace_id=$2 AND status <> 'disabled'")
+    let provider_row = match sqlx::query("SELECT management_provider, provider_domain_id, shared_stalwart_domain FROM domains WHERE id=$1 AND workspace_id=$2 AND status <> 'disabled'")
         .bind(id).bind(workspace_id).fetch_optional(&state.db).await {
             Ok(Some(value)) => value,
             Ok(None) => return error(StatusCode::NOT_FOUND, "domain_not_found", "Domain was not found"),
             Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to remove domain"),
         };
     let provider: String = provider_row.get("management_provider");
-    if provider == "stalwart" {
+    if provider == "stalwart" && !provider_row.get::<bool, _>("shared_stalwart_domain") {
         let provider_id: Option<String> = provider_row.get("provider_domain_id");
         let Some(client) = &state.stalwart else {
             return error(
@@ -546,13 +561,13 @@ async fn ensure_provisioned(state: &AppState, id: Uuid, name: &str) -> anyhow::R
         .bind(format!("domain-provision:{id}"))
         .execute(&mut *tx)
         .await?;
-    let existing = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT provider_domain_id FROM domains WHERE id=$1 FOR UPDATE",
+    let row = sqlx::query(
+        "SELECT provider_domain_id, shared_stalwart_domain, workspace_id FROM domains WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
     .fetch_one(&mut *tx)
     .await?;
-    if existing.is_some() {
+    if row.get::<Option<String>, _>("provider_domain_id").is_some() {
         tx.commit().await?;
         return Ok(());
     }
@@ -569,7 +584,19 @@ async fn ensure_provisioned(state: &AppState, id: Uuid, name: &str) -> anyhow::R
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("MTA_PUBLIC_IPV4 is missing"))?;
     let return_path = format!("{}.{name}", state.mta_return_path_prefix);
-    let provisioned = client.provision(name, &return_path).await?;
+    let provisioned = if row.get::<bool, _>("shared_stalwart_domain") {
+        let workspace_id: Uuid = row.get("workspace_id");
+        anyhow::ensure!(
+            state.stalwart_shared_domain.as_deref() == Some(name)
+                && state.stalwart_shared_workspace_id == Some(workspace_id),
+            "shared domain is no longer authorized for this workspace"
+        );
+        client
+            .provision_shared(name, &return_path, workspace_id)
+            .await?
+    } else {
+        client.provision(name, &return_path).await?
+    };
     let records = stalwart_dns_records(
         name,
         &state.mta_return_path_prefix,

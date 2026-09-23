@@ -67,6 +67,36 @@ impl Client {
         self.create_signature(&domain_id, None).await
     }
 
+    pub(crate) async fn provision_shared(
+        &self,
+        name: &str,
+        return_path: &str,
+        workspace_id: Uuid,
+    ) -> Result<ProvisionedDomain> {
+        let domain_id = self
+            .find_domain(name)
+            .await?
+            .with_context(|| format!("shared Stalwart domain {name} does not exist"))?;
+        let existing = self.get_one("x:Domain/get", &domain_id).await?;
+        if existing.get("isEnabled").and_then(Value::as_bool) != Some(true) {
+            bail!("shared Stalwart domain {name} is not enabled");
+        }
+        if existing.get("description").and_then(Value::as_str) == Some(MAILER_DOMAIN_MARKER) {
+            bail!("Stalwart domain {name} is already owned by Mailer; use normal provisioning");
+        }
+        // Add only the bounce alias. Never alter ownership, enabled state, or
+        // any pre-existing DKIM signature on a CS Mail domain.
+        self.add_alias(&domain_id, return_path).await?;
+        let selector = shared_selector(name, workspace_id);
+        if let Some(signature) = self
+            .find_signature_by_selector(&domain_id, &selector)
+            .await?
+        {
+            return Ok(signature);
+        }
+        self.create_signature(&domain_id, Some(&selector)).await
+    }
+
     pub(crate) fn rotation_selector(&self, domain_id: &str) -> String {
         new_selector(domain_id)
     }
@@ -164,6 +194,25 @@ impl Client {
             ensure_no_set_error(&response)?;
             bail!("Stalwart did not confirm the domain update")
         }
+    }
+
+    async fn add_alias(&self, id: &str, alias: &str) -> Result<()> {
+        let alias_path = format!("aliases/{alias}");
+        let response = self
+            .call(
+                "x:Domain/set",
+                json!({"update": {(id): {(alias_path): true}}}),
+            )
+            .await?;
+        ensure_no_set_error(&response)?;
+        if !response
+            .get("updated")
+            .and_then(Value::as_object)
+            .is_some_and(|value| value.contains_key(id))
+        {
+            bail!("Stalwart did not confirm the shared domain alias update");
+        }
+        Ok(())
     }
 
     async fn find_signature(&self, domain_id: &str) -> Result<Option<ProvisionedDomain>> {
@@ -367,9 +416,15 @@ fn new_selector(seed: &str) -> String {
     )
 }
 
+fn shared_selector(domain: &str, workspace_id: Uuid) -> String {
+    let digest = Sha256::digest(format!("cs-mailer-shared:{domain}:{workspace_id}").as_bytes());
+    format!("csmailer-{}", hex::encode(&digest[..8]))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{dkim_value_from_pem, new_selector};
+    use super::{dkim_value_from_pem, new_selector, shared_selector};
+    use uuid::Uuid;
 
     #[test]
     fn converts_public_pem_to_dns_value() {
@@ -384,5 +439,19 @@ mod tests {
         assert!(selector
             .chars()
             .all(|value| value.is_ascii_alphanumeric() || value == '-'));
+    }
+
+    #[test]
+    fn shared_selector_is_stable_and_workspace_specific() {
+        let first = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let second = Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
+        assert_eq!(
+            shared_selector("crescentsphere.com", first),
+            shared_selector("crescentsphere.com", first)
+        );
+        assert_ne!(
+            shared_selector("crescentsphere.com", first),
+            shared_selector("crescentsphere.com", second)
+        );
     }
 }

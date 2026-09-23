@@ -13,6 +13,37 @@ provider domain ID may need an operator ownership review and explicit
 migration before it can be re-provisioned. Do not remove or edit the other
 product's domain to clear the conflict.
 
+## Sharing the CrescentSphere root domain
+
+CS Mail owns `crescentsphere.com` in Stalwart for receiving mail and mailboxes.
+One explicitly selected Mailer workspace may also verify it as a sending domain.
+Set both of these in Mailer's production `.env` before adding the domain:
+
+```env
+STALWART_SHARED_DOMAIN=crescentsphere.com
+STALWART_SHARED_WORKSPACE_ID=<the-Mailer-workspace-UUID>
+```
+
+The UUID is the `workspaces.id` value in Mailer's PostgreSQL database for the
+workspace that will send CrescentSphere service mail. Adding the domain from
+any other workspace is rejected. The Stalwart Domain must already exist and
+be enabled. Mailer adds only `bounce.crescentsphere.com` as an alias and a
+Mailer-specific DKIM signature. It does not take ownership of, disable, or
+rename CS Mail's Domain object. Removing the domain in Mailer disables its
+Mailer record only; CS Mail's mailboxes remain active.
+
+After adding the root domain in Mailer, publish its displayed
+`_mailer-verification.crescentsphere.com`, DKIM selector, and
+`bounce.crescentsphere.com` MX/SPF records alongside the root MX/SPF/DMARC.
+The root SPF must authorize the actual Stalwart sending IP. Keep only one
+SPF TXT and one DMARC TXT at each name. Then verify the domain in Mailer and
+create a separate send-only API key for each service (such as Notes), with
+an approved From address such as `notes@crescentsphere.com`. The existing
+`mailer.crescentsphere.com` domain may remain for Mailer's own system mail.
+
+Do not remove Mailer's displayed DNS records when importing the base DNS zone:
+they are created after the shared domain is added and have distinct names.
+
 ## One-time Stalwart setup
 
 1. Start the independent stack with `sh manage stalwart-up`. It creates the

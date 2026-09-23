@@ -33,6 +33,8 @@ pub struct Settings {
     pub cloudflare_oauth_scopes: String,
     pub stalwart_api_url: Option<String>,
     pub stalwart_api_token: Option<String>,
+    pub stalwart_shared_domain: Option<String>,
+    pub stalwart_shared_workspace_id: Option<String>,
     pub mta_public_host: Option<String>,
     pub mta_public_ipv4: Option<String>,
     pub mta_return_path_prefix: String,
@@ -93,6 +95,8 @@ impl Settings {
             env::var("CLOUDFLARE_OAUTH_SCOPES").unwrap_or_else(|_| "zone.read dns.write".into());
         let stalwart_api_url = optional("STALWART_API_URL");
         let stalwart_api_token = optional("STALWART_API_TOKEN");
+        let stalwart_shared_domain = optional("STALWART_SHARED_DOMAIN");
+        let stalwart_shared_workspace_id = optional("STALWART_SHARED_WORKSPACE_ID");
         let mta_public_host = optional("MTA_PUBLIC_HOST");
         let mta_public_ipv4 = optional("MTA_PUBLIC_IPV4");
         let mta_return_path_prefix =
@@ -178,6 +182,21 @@ impl Settings {
             if stalwart_api_token.as_deref().expect("checked above").len() < 32 {
                 bail!("STALWART_API_TOKEN must contain at least 32 characters");
             }
+        }
+        if stalwart_shared_domain.is_some() != stalwart_shared_workspace_id.is_some() {
+            bail!("STALWART_SHARED_DOMAIN and STALWART_SHARED_WORKSPACE_ID must be set together");
+        }
+        if let (Some(domain), Some(workspace)) =
+            (&stalwart_shared_domain, &stalwart_shared_workspace_id)
+        {
+            if !stalwart_configured
+                || !is_dns_name(domain)
+                || domain != &domain.to_ascii_lowercase()
+            {
+                bail!("STALWART_SHARED_DOMAIN requires Stalwart and a lowercase DNS domain");
+            }
+            uuid::Uuid::parse_str(workspace)
+                .context("STALWART_SHARED_WORKSPACE_ID must be a UUID")?;
         }
         let smtp_values = [
             smtp_host.as_ref(),
@@ -319,6 +338,8 @@ impl Settings {
             cloudflare_oauth_scopes,
             stalwart_api_url,
             stalwart_api_token,
+            stalwart_shared_domain,
+            stalwart_shared_workspace_id,
             mta_public_host,
             mta_public_ipv4,
             mta_return_path_prefix,

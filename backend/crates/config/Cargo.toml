@@ -8,3 +8,4 @@ license.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 url.workspace = true
+uuid.workspace = true

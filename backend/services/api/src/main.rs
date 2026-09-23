@@ -38,6 +38,8 @@ pub(crate) struct AppState {
     db: db::DbPool,
     nats: async_nats::Client,
     stalwart: Option<stalwart::Client>,
+    stalwart_shared_domain: Option<String>,
+    stalwart_shared_workspace_id: Option<uuid::Uuid>,
     mta_public_host: Option<String>,
     mta_public_ipv4: Option<String>,
     mta_return_path_prefix: String,
@@ -100,6 +102,12 @@ async fn main() -> anyhow::Result<()> {
         db,
         nats,
         stalwart,
+        stalwart_shared_domain: settings.stalwart_shared_domain.clone(),
+        stalwart_shared_workspace_id: settings
+            .stalwart_shared_workspace_id
+            .as_deref()
+            .map(uuid::Uuid::parse_str)
+            .transpose()?,
         mta_public_host: settings.mta_public_host.clone(),
         mta_public_ipv4: settings.mta_public_ipv4.clone(),
         mta_return_path_prefix: settings.mta_return_path_prefix.clone(),

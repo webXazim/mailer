@@ -997,6 +997,7 @@ dependencies = [
  "anyhow",
  "serde",
  "url",
+ "uuid",
 ]
 
 [[package]]

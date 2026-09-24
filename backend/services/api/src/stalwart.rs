@@ -18,6 +18,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 const MAILER_DOMAIN_MARKER: &str = "CrescentSphere Mailer managed domain";
+const CS_MAIL_DOMAIN_PREFIX: &str = "cs-mail:organization:";
 
 #[derive(Clone)]
 pub(crate) struct Client {
@@ -39,6 +40,22 @@ impl Client {
             endpoints: [format!("{base_url}/api"), format!("{base_url}/jmap")],
             token,
         }
+    }
+
+    /// Inspect the shared provider before any mutation. Name equality alone
+    /// does not authorize a Mailer workspace to use an existing domain.
+    pub(crate) async fn domain_owner(&self, name: &str) -> Result<Option<String>> {
+        let Some(id) = self.find_domain(name).await? else { return Ok(None); };
+        let domain = self.get_one("x:Domain/get", &id).await?;
+        Ok(Some(domain.get("description").and_then(Value::as_str).unwrap_or_default().to_owned()))
+    }
+
+    pub(crate) fn is_mailer_domain(description: &str) -> bool {
+        description == MAILER_DOMAIN_MARKER
+    }
+
+    pub(crate) fn is_cs_mail_domain(description: &str) -> bool {
+        description.starts_with(CS_MAIL_DOMAIN_PREFIX)
     }
 
     pub(crate) async fn provision(
@@ -72,6 +89,7 @@ impl Client {
         name: &str,
         return_path: &str,
         workspace_id: Uuid,
+        allow_legacy_shared_domain: bool,
     ) -> Result<ProvisionedDomain> {
         let domain_id = self
             .find_domain(name)
@@ -81,8 +99,12 @@ impl Client {
         if existing.get("isEnabled").and_then(Value::as_bool) != Some(true) {
             bail!("shared Stalwart domain {name} is not enabled");
         }
-        if existing.get("description").and_then(Value::as_str) == Some(MAILER_DOMAIN_MARKER) {
+        let description = existing.get("description").and_then(Value::as_str).unwrap_or_default();
+        if description == MAILER_DOMAIN_MARKER {
             bail!("Stalwart domain {name} is already owned by Mailer; use normal provisioning");
+        }
+        if !Self::is_cs_mail_domain(description) && !allow_legacy_shared_domain {
+            bail!("Stalwart domain {name} is not a verified CS Mail domain");
         }
         // Add only the bounce alias. Never alter ownership, enabled state, or
         // any pre-existing DKIM signature on a CS Mail domain.
@@ -110,10 +132,6 @@ impl Client {
             return Ok(signature);
         }
         self.create_signature(domain_id, Some(selector)).await
-    }
-
-    pub(crate) async fn disable(&self, domain_id: &str) -> Result<()> {
-        self.update_domain(domain_id, false, None).await
     }
 
     pub(crate) async fn destroy_signature(&self, signature_id: &str) -> Result<()> {
@@ -423,8 +441,16 @@ fn shared_selector(domain: &str, workspace_id: Uuid) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{dkim_value_from_pem, new_selector, shared_selector};
+    use super::{dkim_value_from_pem, new_selector, shared_selector, Client};
     use uuid::Uuid;
+
+    #[test]
+    fn recognizes_only_the_two_explicit_domain_owners() {
+        assert!(Client::is_mailer_domain("CrescentSphere Mailer managed domain"));
+        assert!(Client::is_cs_mail_domain("cs-mail:organization:abc:domain:def"));
+        assert!(!Client::is_cs_mail_domain("unrelated:organization:abc:domain:def"));
+        assert!(!Client::is_mailer_domain("CrescentSphere Mailer managed domain extra"));
+    }
 
     #[test]
     fn converts_public_pem_to_dns_value() {

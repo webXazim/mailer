@@ -44,6 +44,28 @@ an approved From address such as `notes@crescentsphere.com`. The existing
 Do not remove Mailer's displayed DNS records when importing the base DNS zone:
 they are created after the shared domain is added and have distinct names.
 
+## Sharing any customer domain with CS Mail
+
+One Stalwart Domain object can support both products. A CS Mail business can
+verify and attach mailboxes to a Mailer-owned domain. Mailer keeps its provider
+ownership marker; CS Mail keeps a separate shared binding and must not delete
+or disable the provider object while mailboxes use it.
+
+If a customer adds a domain to Mailer after CS Mail has created it, Mailer first
+shows only `_mailer-verification.<domain>`. Publish that TXT record (manually or
+through the Cloudflare DNS connection) and run Verify. Only after public DNS
+matches does Mailer add its bounce alias and its own `csmailer-...` DKIM
+signature. Then publish the additional DNS records Mailer displays and verify
+again. Keep CS Mail's apex MX, SPF, and existing DKIM records; the Mailer
+bounce records are on a separate hostname. A conflicting single-value record
+requires review instead of automatic replacement.
+
+Removing a sending domain from Mailer disables its Mailer record and API
+authorization. It does not disable the Stalwart Domain object, because CS Mail
+may host mailboxes there. Orphaned provider objects require an operator check
+of both products before any manual cleanup. Do not delete the shared Stalwart
+domain to resolve a claim conflict.
+
 ## One-time Stalwart setup
 
 1. Start the independent stack with `sh manage stalwart-up`. It creates the

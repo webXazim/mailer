@@ -1,4 +1,5 @@
 use super::AppState;
+use super::stalwart;
 use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
@@ -127,10 +128,57 @@ async fn add_domain(
             "This domain is reserved for a different Mailer workspace",
         );
     }
+    let existing_owner = match client.domain_owner(&domain).await {
+        Ok(value) => value,
+        Err(provider_error) => {
+            tracing::error!(error=%provider_error, domain=%domain, "unable to inspect provider domain");
+            return error(StatusCode::BAD_GATEWAY, "provider_error", "Unable to inspect the sending domain");
+        }
+    };
+    if existing_owner.as_deref().is_some_and(|owner| !stalwart::Client::is_mailer_domain(owner)
+        && !stalwart::Client::is_cs_mail_domain(owner) && !shared) {
+        return error(StatusCode::CONFLICT, "domain_owner_conflict", "The mail server domain has an unrelated owner");
+    }
+    // Existing provider domains require a fresh public TXT proof before Mailer
+    // adds aliases or signatures. The explicitly configured legacy root domain
+    // remains authorized by its workspace allowlist.
+    if existing_owner.is_some() && !shared {
+        let shared_cs_mail = existing_owner.as_deref().is_some_and(stalwart::Client::is_cs_mail_domain);
+        let row = match sqlx::query(
+            "INSERT INTO domains (workspace_id,name,management_provider,provider_status,shared_stalwart_domain) VALUES ($1,$2,'stalwart','pending',$3) RETURNING id,status,created_at"
+        ).bind(workspace_id).bind(&domain).bind(shared_cs_mail).fetch_one(&mut *tx).await {
+            Ok(row) => row,
+            Err(db_error) => {
+                tracing::error!(error=%db_error, domain=%domain, "unable to create pending domain claim");
+                return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to add domain");
+            }
+        };
+        let domain_id: Uuid = row.get("id");
+        let name = format!("_mailer-verification.{domain}");
+        let value = format!("mailer-verification={domain_id}");
+        if sqlx::query("INSERT INTO domain_dns_records(domain_id,record_type,name,value,required_for_sending) VALUES($1,'TXT',$2,$3,true)")
+            .bind(domain_id).bind(&name).bind(&value).execute(&mut *tx).await.is_err() {
+            return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to create verification record");
+        }
+        if tx.commit().await.is_err() {
+            return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to add domain");
+        }
+        let view = DomainView {
+            id: domain_id, domain, status: row.get("status"), provider: "stalwart".into(),
+            verified_at: None,
+            created_at: row.get::<chrono::DateTime<chrono::Utc>, _>("created_at").to_rfc3339(),
+            records: vec![RecordView { record_type: "TXT".into(), name, value,
+                required: true, status: "pending".into(), last_checked_at: None }],
+            dns_automation: if state.cloudflare_oauth_client_id.is_some() && state.cloudflare_oauth_client_secret.is_some() {
+                vec!["cloudflare"]
+            } else { Vec::new() },
+        };
+        return (StatusCode::CREATED, Json(json!({ "data": view }))).into_response();
+    }
     let return_path = format!("{}.{}", state.mta_return_path_prefix, domain);
     let provisioned = match if shared {
         client
-            .provision_shared(&domain, &return_path, workspace_id)
+            .provision_shared(&domain, &return_path, workspace_id, true)
             .await
     } else {
         client.provision(&domain, &return_path).await
@@ -292,33 +340,10 @@ async fn delete_domain(
         Ok(value) => value,
         Err(response) => return response,
     };
-    let provider_row = match sqlx::query("SELECT management_provider, provider_domain_id, shared_stalwart_domain FROM domains WHERE id=$1 AND workspace_id=$2 AND status <> 'disabled'")
-        .bind(id).bind(workspace_id).fetch_optional(&state.db).await {
-            Ok(Some(value)) => value,
-            Ok(None) => return error(StatusCode::NOT_FOUND, "domain_not_found", "Domain was not found"),
-            Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to remove domain"),
-        };
-    let provider: String = provider_row.get("management_provider");
-    if provider == "stalwart" && !provider_row.get::<bool, _>("shared_stalwart_domain") {
-        let provider_id: Option<String> = provider_row.get("provider_domain_id");
-        let Some(client) = &state.stalwart else {
-            return error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "domain_provider_unavailable",
-                "Stalwart domain provisioning is unavailable",
-            );
-        };
-        if let Some(provider_id) = provider_id {
-            if let Err(provider_error) = client.disable(&provider_id).await {
-                tracing::error!(error=%provider_error, domain_id=%id, "unable to disable Stalwart domain");
-                return error(
-                    StatusCode::BAD_GATEWAY,
-                    "provider_error",
-                    "Unable to disable the sending domain",
-                );
-            }
-        }
-    }
+    // This provider domain may also host CS Mail accounts. Removing a Mailer
+    // sending domain revokes its application authorization but must never
+    // disable the shared Stalwart domain and break inbound business mail.
+    // Provider cleanup requires a separate reconciliation of both products.
     match sqlx::query("UPDATE domains SET status = 'disabled', updated_at = now() WHERE id = $1 AND workspace_id = $2 AND status <> 'disabled'").bind(id).bind(workspace_id).execute(&state.db).await { Ok(result) if result.rows_affected() == 1 => Json(json!({"data": {"disabled": true}})).into_response(), Ok(_) => error(StatusCode::NOT_FOUND, "domain_not_found", "Domain was not found"), Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "Unable to remove domain") }
 }
 
@@ -477,6 +502,18 @@ async fn refresh_verification(
     id: Uuid,
     name: &str,
 ) -> anyhow::Result<(bool, bool)> {
+    let pending: Option<String> = sqlx::query_scalar("SELECT provider_domain_id FROM domains WHERE id=$1")
+        .bind(id).fetch_one(&state.db).await?;
+    if pending.is_none() {
+        let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
+        let record_name = format!("_mailer-verification.{name}");
+        let record_value = format!("mailer-verification={id}");
+        if !dns_record_exists(&resolver, "TXT", &record_name, &record_value).await {
+            sqlx::query("UPDATE domain_dns_records SET status='pending',last_checked_at=now() WHERE domain_id=$1 AND record_type='TXT' AND name=$2")
+                .bind(id).bind(&record_name).execute(&state.db).await?;
+            return Ok((false, false));
+        }
+    }
     ensure_provisioned(state, id, name).await?;
     let provider_row =
         sqlx::query("SELECT management_provider, provider_domain_id, previous_dkim_signature_id, previous_dkim_record_name FROM domains WHERE id=$1")
@@ -584,15 +621,24 @@ async fn ensure_provisioned(state: &AppState, id: Uuid, name: &str) -> anyhow::R
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("MTA_PUBLIC_IPV4 is missing"))?;
     let return_path = format!("{}.{name}", state.mta_return_path_prefix);
-    let provisioned = if row.get::<bool, _>("shared_stalwart_domain") {
-        let workspace_id: Uuid = row.get("workspace_id");
+    let workspace_id: Uuid = row.get("workspace_id");
+    let legacy_shared = state.stalwart_shared_domain.as_deref() == Some(name)
+        && state.stalwart_shared_workspace_id == Some(workspace_id);
+    let owner = client.domain_owner(name).await?;
+    if owner.is_some() && !legacy_shared {
+        let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
         anyhow::ensure!(
-            state.stalwart_shared_domain.as_deref() == Some(name)
-                && state.stalwart_shared_workspace_id == Some(workspace_id),
-            "shared domain is no longer authorized for this workspace"
+            dns_record_exists(&resolver, "TXT", &format!("_mailer-verification.{name}"), &format!("mailer-verification={id}")).await,
+            "Publish the Mailer verification TXT record before linking an existing mail domain"
+        );
+    }
+    let provisioned = if row.get::<bool, _>("shared_stalwart_domain") {
+        anyhow::ensure!(
+            legacy_shared || owner.as_deref().is_some_and(stalwart::Client::is_cs_mail_domain),
+            "shared domain is no longer owned by CS Mail or allowed for this workspace"
         );
         client
-            .provision_shared(name, &return_path, workspace_id)
+            .provision_shared(name, &return_path, workspace_id, legacy_shared)
             .await?
     } else {
         client.provision(name, &return_path).await?
@@ -639,9 +685,9 @@ pub(crate) async fn run_verifier(state: AppState) {
         let rows = match sqlx::query(
             "SELECT domain.id, domain.name FROM domains AS domain \
              JOIN workspaces AS workspace ON workspace.id = domain.workspace_id \
-             WHERE domain.status = 'pending' \
+             WHERE domain.status <> 'disabled' AND (domain.status = 'pending' \
                 OR (domain.status = 'verified' AND NOT workspace.production_enabled) \
-                OR domain.previous_dkim_signature_id IS NOT NULL \
+                OR domain.previous_dkim_signature_id IS NOT NULL) \
              ORDER BY domain.updated_at LIMIT 100",
         )
         .fetch_all(&state.db)

@@ -77,6 +77,16 @@ may host mailboxes there. Orphaned provider objects require an operator check
 of both products before any manual cleanup. Do not delete the shared Stalwart
 domain to resolve a claim conflict.
 
+If the same customer re-adds a disabled Mailer sending domain, Mailer issues a
+new `_mailer-verification.<domain>` TXT value. Remove the old TXT value and
+publish the new one, then run Verify. The disabled Mailer row retains its
+Stalwart ID for audit; the new, DNS-verified row may bind to that same provider
+domain. Publish the new Mailer DKIM and bounce MX/SPF records after they appear.
+Mailer checks those required records periodically even after verification, so
+deleting them returns the sending domain to pending. The Mailer DMARC suggestion
+is optional and Cloudflare automation does not publish it; CS Mail's business
+mail DNS setup owns the shared domain's DMARC policy.
+
 ## One-time Stalwart setup
 
 1. Start the independent stack with `sh manage stalwart-up`. It creates the

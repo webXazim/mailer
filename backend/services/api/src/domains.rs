@@ -1,20 +1,20 @@
 use super::AppState;
 use super::stalwart;
 use axum::{
+    body::Bytes,
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, Method, Request, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
+use http_body_util::{BodyExt, Empty};
+use hyper_rustls::HttpsConnectorBuilder;
+use hyper_util::{client::legacy::Client as HttpClient, rt::TokioExecutor};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::Row;
 use std::time::Duration;
-use trust_dns_resolver::{
-    config::{ResolverConfig, ResolverOpts},
-    TokioAsyncResolver,
-};
 use uuid::Uuid;
 
 #[derive(Deserialize)]
@@ -505,10 +505,9 @@ async fn refresh_verification(
     let pending: Option<String> = sqlx::query_scalar("SELECT provider_domain_id FROM domains WHERE id=$1")
         .bind(id).fetch_one(&state.db).await?;
     if pending.is_none() {
-        let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
         let record_name = format!("_mailer-verification.{name}");
         let record_value = format!("mailer-verification={id}");
-        if !dns_record_exists(&resolver, "TXT", &record_name, &record_value).await {
+        if !dns_record_exists("TXT", &record_name, &record_value).await? {
             sqlx::query("UPDATE domain_dns_records SET status='pending',last_checked_at=now() WHERE domain_id=$1 AND record_type='TXT' AND name=$2")
                 .bind(id).bind(&record_name).execute(&state.db).await?;
             return Ok((false, false));
@@ -523,7 +522,6 @@ async fn refresh_verification(
     let provider_verified = provider_row
         .get::<Option<String>, _>("provider_domain_id")
         .is_some();
-    let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
     let expected = sqlx::query("SELECT id, record_type, name, value, required_for_sending FROM domain_dns_records WHERE domain_id = $1")
         .bind(id)
         .fetch_all(&state.db)
@@ -535,7 +533,7 @@ async fn refresh_verification(
         let record_name: String = record.get("name");
         let record_value: String = record.get("value");
         let required: bool = record.get("required_for_sending");
-        let found = dns_record_exists(&resolver, &record_type, &record_name, &record_value).await;
+        let found = dns_record_exists(&record_type, &record_name, &record_value).await?;
         let status = if found { "verified" } else { "pending" };
         if required && !found {
             required_dns_verified = false;
@@ -626,9 +624,8 @@ async fn ensure_provisioned(state: &AppState, id: Uuid, name: &str) -> anyhow::R
         && state.stalwart_shared_workspace_id == Some(workspace_id);
     let owner = client.domain_owner(name).await?;
     if owner.is_some() && !legacy_shared {
-        let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
         anyhow::ensure!(
-            dns_record_exists(&resolver, "TXT", &format!("_mailer-verification.{name}"), &format!("mailer-verification={id}")).await,
+            dns_record_exists("TXT", &format!("_mailer-verification.{name}"), &format!("mailer-verification={id}")).await?,
             "Publish the Mailer verification TXT record before linking an existing mail domain"
         );
     }
@@ -684,10 +681,10 @@ pub(crate) async fn run_verifier(state: AppState) {
         timer.tick().await;
         let rows = match sqlx::query(
             "SELECT domain.id, domain.name FROM domains AS domain \
-             JOIN workspaces AS workspace ON workspace.id = domain.workspace_id \
-             WHERE domain.status <> 'disabled' AND (domain.status = 'pending' \
-                OR (domain.status = 'verified' AND NOT workspace.production_enabled) \
-                OR domain.previous_dkim_signature_id IS NOT NULL) \
+             WHERE domain.status <> 'disabled' AND ( \
+               (domain.status = 'verified' AND domain.updated_at <= now()-interval '5 minutes') \
+               OR (domain.status <> 'verified' AND domain.updated_at <= now()-interval '30 seconds') \
+               OR domain.previous_dkim_signature_id IS NOT NULL) \
              ORDER BY domain.updated_at LIMIT 100",
         )
         .fetch_all(&state.db)
@@ -732,7 +729,6 @@ async fn reconcile_legacy_domain_markers(state: &AppState) -> anyhow::Result<()>
     if rows.is_empty() {
         return Ok(());
     }
-    let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
     for row in rows {
         let id: Uuid = row.get("id");
         let name: String = row.get("name");
@@ -740,18 +736,20 @@ async fn reconcile_legacy_domain_markers(state: &AppState) -> anyhow::Result<()>
         let signature_id: String = row.get("active_dkim_signature_id");
         let record_name = format!("_mailer-verification.{name}");
         let record_value = format!("mailer-verification={id}");
-        let result = if dns_record_exists(&resolver, "TXT", &record_name, &record_value).await {
-            let return_path = format!("{}.{name}", state.mta_return_path_prefix);
-            client
-                .reconcile_legacy_domain_marker(
-                    &provider_domain_id,
-                    &name,
-                    &signature_id,
-                    &return_path,
-                )
-                .await
-        } else {
-            Err(anyhow::anyhow!("public Mailer ownership TXT is absent"))
+        let result = match dns_record_exists("TXT", &record_name, &record_value).await {
+            Ok(true) => {
+                let return_path = format!("{}.{name}", state.mta_return_path_prefix);
+                client
+                    .reconcile_legacy_domain_marker(
+                        &provider_domain_id,
+                        &name,
+                        &signature_id,
+                        &return_path,
+                    )
+                    .await
+            }
+            Ok(false) => Err(anyhow::anyhow!("public Mailer ownership TXT is absent")),
+            Err(error) => Err(error),
         };
         match result {
             Ok(()) => {
@@ -813,46 +811,86 @@ async fn domain_view(
     })
 }
 
-async fn dns_record_exists(
-    resolver: &TokioAsyncResolver,
-    record_type: &str,
-    name: &str,
-    expected: &str,
-) -> bool {
-    match record_type {
-        "TXT" | "SPF" | "DMARC" => resolver.txt_lookup(name).await.ok().is_some_and(|lookup| {
-            lookup.iter().any(|txt| {
-                txt.txt_data()
-                    .iter()
-                    .map(|part| String::from_utf8_lossy(part))
-                    .collect::<String>()
-                    .trim_matches('"')
-                    == expected.trim_matches('"')
-            })
-        }),
-        "CNAME" => resolver
-            .lookup(name, trust_dns_resolver::proto::rr::RecordType::CNAME)
-            .await
-            .ok()
-            .is_some_and(|lookup| {
-                lookup.iter().any(|record| {
-                    record
-                        .to_string()
-                        .trim_end_matches('.')
-                        .eq_ignore_ascii_case(expected.trim_end_matches('.'))
-                })
-            }),
-        "MX" => resolver.mx_lookup(name).await.ok().is_some_and(|lookup| {
-            lookup.iter().any(|record| {
-                record
-                    .exchange()
-                    .to_utf8()
-                    .trim_end_matches('.')
-                    .eq_ignore_ascii_case(expected.trim_end_matches('.'))
-            })
-        }),
-        _ => true,
+/// Check public DNS over HTTPS. A resolver outage is an error, not evidence
+/// that a correctly published record is absent.
+async fn dns_record_exists(record_type: &str, name: &str, expected: &str) -> anyhow::Result<bool> {
+    let (query_type, answer_type) = match record_type {
+        "TXT" | "SPF" | "DMARC" => ("TXT", 16),
+        "CNAME" => ("CNAME", 5),
+        "MX" => ("MX", 15),
+        other => anyhow::bail!("unsupported DNS record type {other}"),
+    };
+    let mut checked = false;
+    let mut last_error = None;
+    for endpoint in ["https://cloudflare-dns.com/dns-query", "https://dns.google/resolve"] {
+        match dns_answers(endpoint, name, query_type, answer_type).await {
+            Ok(answers) => {
+                checked = true;
+                if answers.iter().any(|answer| dns_answer_matches(record_type, answer, expected)) {
+                    return Ok(true);
+                }
+            }
+            Err(error) => last_error = Some(error),
+        }
     }
+    if checked { Ok(false) } else { Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no public DNS resolver responded"))) }
+}
+
+async fn dns_answers(endpoint: &str, name: &str, record_type: &str, answer_type: u64) -> anyhow::Result<Vec<String>> {
+    let mut url = url::Url::parse(endpoint)?;
+    url.query_pairs_mut().append_pair("name", name).append_pair("type", record_type);
+    let connector = HttpsConnectorBuilder::new()
+        .with_native_roots()?
+        .https_only()
+        .enable_http1()
+        .build();
+    let client: HttpClient<_, Empty<Bytes>> = HttpClient::builder(TokioExecutor::new()).build(connector);
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri(url.as_str())
+        .header(header::ACCEPT, "application/dns-json")
+        .body(Empty::<Bytes>::new())?;
+    let response = tokio::time::timeout(Duration::from_secs(8), client.request(request)).await??;
+    anyhow::ensure!(response.status().is_success(), "public DNS returned HTTP {}", response.status());
+    let body = response.into_body().collect().await?.to_bytes();
+    let payload: serde_json::Value = serde_json::from_slice(&body)?;
+    let status = payload.get("Status").and_then(serde_json::Value::as_i64)
+        .ok_or_else(|| anyhow::anyhow!("public DNS response omitted status"))?;
+    if status == 3 { return Ok(Vec::new()); }
+    anyhow::ensure!(status == 0, "public DNS returned status {status}");
+    Ok(payload.get("Answer").and_then(serde_json::Value::as_array)
+        .into_iter().flatten()
+        .filter(|answer| answer.get("type").and_then(serde_json::Value::as_u64) == Some(answer_type))
+        .filter_map(|answer| answer.get("data").and_then(serde_json::Value::as_str))
+        .map(str::to_owned).collect())
+}
+
+fn dns_answer_matches(record_type: &str, answer: &str, expected: &str) -> bool {
+    match record_type {
+        "TXT" | "SPF" | "DMARC" => normalize_dns_txt(answer) == normalize_dns_txt(expected),
+        "CNAME" => answer.trim_end_matches('.').eq_ignore_ascii_case(expected.trim_end_matches('.')),
+        "MX" => answer.split_whitespace().nth(1)
+            .is_some_and(|exchange| exchange.trim_end_matches('.').eq_ignore_ascii_case(expected.trim_end_matches('.'))),
+        _ => false,
+    }
+}
+
+fn normalize_dns_txt(value: &str) -> String {
+    let value = value.trim();
+    if !value.contains('"') { return value.to_owned(); }
+    let mut result = String::new();
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '"' { continue; }
+        let mut escaped = false;
+        while let Some(next) = chars.next() {
+            if escaped { result.push(next); escaped = false; }
+            else if next == '\\' { escaped = true; }
+            else if next == '"' { break; }
+            else { result.push(next); }
+        }
+    }
+    if result.is_empty() { value.trim_matches('"').to_owned() } else { result }
 }
 
 fn stalwart_dns_records(
@@ -937,7 +975,14 @@ fn error(status: StatusCode, code: &str, message: &str) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_domain, stalwart_dns_records};
+    use super::{dns_answer_matches, normalize_domain, stalwart_dns_records};
+
+    #[test]
+    fn matches_public_dns_json_txt_chunks_and_mx() {
+        assert!(dns_answer_matches("TXT", "\"mailer-verification=abc\" \"123\"", "mailer-verification=abc123"));
+        assert!(dns_answer_matches("MX", "10 SMTP.EXAMPLE.COM.", "smtp.example.com"));
+        assert!(!dns_answer_matches("TXT", "\"mailer-verification=other\"", "mailer-verification=abc123"));
+    }
 
     #[test]
     fn normalizes_valid_domains() {

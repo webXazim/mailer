@@ -288,7 +288,9 @@ async fn publish_records(state: &AppState, domain_id: Uuid, token: &str) -> anyh
         .ok_or_else(|| {
             anyhow::anyhow!("The authorized Cloudflare account does not contain {domain}")
         })?;
-    let records = sqlx::query("SELECT record_type,name,value FROM domain_dns_records WHERE domain_id=$1 ORDER BY required_for_sending DESC,record_type,name")
+    // A shared business domain has one DMARC policy for both products. Mailer's
+    // DMARC suggestion is optional; do not publish it over CS Mail's policy.
+    let records = sqlx::query("SELECT record_type,name,value FROM domain_dns_records WHERE domain_id=$1 AND required_for_sending=true ORDER BY record_type,name")
         .bind(domain_id)
         .fetch_all(&state.db)
         .await?;

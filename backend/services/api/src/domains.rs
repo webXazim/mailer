@@ -706,7 +706,71 @@ pub(crate) async fn run_verifier(state: AppState) {
                 tracing::warn!(error = %background_error, domain = %name, "automatic domain verification failed");
             }
         }
+        if let Err(background_error) = reconcile_legacy_domain_markers(&state).await {
+            tracing::warn!(error = %background_error, "unable to reconcile legacy provider domain markers");
+        }
     }
+}
+
+/// Historical Mailer domains were created without a Stalwart ownership
+/// description. Repair only rows with a provider ID and DKIM signature already
+/// recorded in Mailer, and only while their public ownership TXT still matches.
+async fn reconcile_legacy_domain_markers(state: &AppState) -> anyhow::Result<()> {
+    let Some(client) = state.stalwart.as_ref() else {
+        return Ok(());
+    };
+    let rows = sqlx::query(
+        "SELECT id, name, provider_domain_id, active_dkim_signature_id FROM domains \
+         WHERE status='verified' AND management_provider='stalwart' \
+           AND shared_stalwart_domain=false AND provider_domain_id IS NOT NULL \
+           AND active_dkim_signature_id IS NOT NULL \
+           AND provider_marker_checked_at IS NULL AND provider_marker_next_check_at <= now() \
+         ORDER BY provider_marker_next_check_at LIMIT 20",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
+    for row in rows {
+        let id: Uuid = row.get("id");
+        let name: String = row.get("name");
+        let provider_domain_id: String = row.get("provider_domain_id");
+        let signature_id: String = row.get("active_dkim_signature_id");
+        let record_name = format!("_mailer-verification.{name}");
+        let record_value = format!("mailer-verification={id}");
+        let result = if dns_record_exists(&resolver, "TXT", &record_name, &record_value).await {
+            let return_path = format!("{}.{name}", state.mta_return_path_prefix);
+            client
+                .reconcile_legacy_domain_marker(
+                    &provider_domain_id,
+                    &name,
+                    &signature_id,
+                    &return_path,
+                )
+                .await
+        } else {
+            Err(anyhow::anyhow!("public Mailer ownership TXT is absent"))
+        };
+        match result {
+            Ok(()) => {
+                sqlx::query("UPDATE domains SET provider_marker_checked_at=now() WHERE id=$1 AND provider_marker_checked_at IS NULL")
+                    .bind(id)
+                    .execute(&state.db)
+                    .await?;
+                tracing::info!(domain = %name, "legacy Mailer provider ownership confirmed");
+            }
+            Err(background_error) => {
+                sqlx::query("UPDATE domains SET provider_marker_next_check_at=now()+interval '10 minutes' WHERE id=$1 AND provider_marker_checked_at IS NULL")
+                    .bind(id)
+                    .execute(&state.db)
+                    .await?;
+                tracing::warn!(domain = %name, error = %background_error, "legacy Mailer provider ownership requires review");
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn domain_view(

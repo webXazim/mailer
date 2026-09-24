@@ -13,6 +13,17 @@ provider domain ID may need an operator ownership review and explicit
 migration before it can be re-provisioned. Do not remove or edit the other
 product's domain to clear the conflict.
 
+For a previously verified Mailer domain with stored Stalwart domain and DKIM
+IDs, the background verifier can restore a missing ownership description. It
+requires the current public `_mailer-verification.<domain>` TXT challenge to
+match the Mailer domain ID, the stored provider domain ID to resolve to the
+same name, the stored DKIM signature to belong to that provider domain, and
+the expected Mailer return-path alias and manual DKIM configuration. It only
+updates a blank description. A different marker, missing proof, or mismatched
+provider object remains blocked for operator review. After Mailer deploys, wait
+for reconciliation and retry CS Mail domain provisioning. Do not rename or
+delete either product's domain to force adoption.
+
 ## Sharing the CrescentSphere root domain
 
 CS Mail owns `crescentsphere.com` in Stalwart for receiving mail and mailboxes.
@@ -179,9 +190,9 @@ key in Stalwart and removes the old record from its displayed instructions.
 The stale public TXT can be deleted later at providers that do not support the
 Cloudflare shortcut; it cannot be used after the old private key is destroyed.
 
-Disabling a domain first disables its Stalwart Domain object, then marks the
-Mailer domain disabled. Legacy domains are re-provisioned into Stalwart by the
-background verifier after the provider-removal migration.
+Disabling a domain revokes its Mailer authorization without disabling the
+shared Stalwart Domain object. An operator must review both products before
+removing an orphaned provider domain.
 
 ## Deployment order
 

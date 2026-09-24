@@ -58,6 +58,57 @@ impl Client {
         description.starts_with(CS_MAIL_DOMAIN_PREFIX)
     }
 
+    /// Repair only Mailer domains created before descriptions were added. The
+    /// caller must first verify this workspace's current public TXT challenge.
+    pub(crate) async fn reconcile_legacy_domain_marker(
+        &self,
+        domain_id: &str,
+        name: &str,
+        signature_id: &str,
+        return_path: &str,
+    ) -> Result<()> {
+        let domain = self.get_one("x:Domain/get", domain_id).await?;
+        anyhow::ensure!(
+            domain.get("name").and_then(Value::as_str).is_some_and(|value| value.eq_ignore_ascii_case(name)),
+            "stored Mailer provider id does not match the domain name"
+        );
+        let description = domain.get("description").and_then(Value::as_str).unwrap_or_default();
+        if description == MAILER_DOMAIN_MARKER {
+            return Ok(());
+        }
+        anyhow::ensure!(description.trim().is_empty(), "provider domain has another ownership marker");
+        anyhow::ensure!(
+            domain.get("isEnabled").and_then(Value::as_bool) == Some(true),
+            "legacy provider domain is disabled"
+        );
+        anyhow::ensure!(
+            domain.get("dkimManagement").and_then(|value| value.get("@type")).and_then(Value::as_str) == Some("Manual"),
+            "legacy provider domain is not configured like a Mailer sending domain"
+        );
+        anyhow::ensure!(
+            domain.get("aliases").and_then(|value| value.get(return_path)).and_then(Value::as_bool) == Some(true),
+            "legacy provider domain does not have this Mailer return-path alias"
+        );
+        let signature = self.get_one("x:DkimSignature/get", signature_id).await?;
+        anyhow::ensure!(
+            signature.get("domainId").and_then(Value::as_str) == Some(domain_id),
+            "stored Mailer DKIM signature is not attached to this provider domain"
+        );
+        let result = self.call("x:Domain/set", json!({
+            "update": {(domain_id): {"description": MAILER_DOMAIN_MARKER}}
+        })).await?;
+        if !result.get("updated").and_then(Value::as_object).is_some_and(|items| items.contains_key(domain_id)) {
+            ensure_no_set_error(&result)?;
+            bail!("Stalwart did not confirm legacy domain marker repair");
+        }
+        let updated = self.get_one("x:Domain/get", domain_id).await?;
+        anyhow::ensure!(
+            updated.get("description").and_then(Value::as_str) == Some(MAILER_DOMAIN_MARKER),
+            "Stalwart did not retain the Mailer domain marker"
+        );
+        Ok(())
+    }
+
     pub(crate) async fn provision(
         &self,
         name: &str,

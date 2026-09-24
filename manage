@@ -72,6 +72,11 @@ production_compose() {
     # Use the same file values preflight validates, even if the login shell has
     # exported similarly named variables for another application on this VPS.
     load_environment
+    if [ "${SMTP_GATEWAY_ENABLED:-false}" = true ]; then
+        export COMPOSE_PROFILES=smtp
+    else
+        unset COMPOSE_PROFILES
+    fi
     docker compose --project-name crescentsphere-mailer --env-file .env -f docker-compose.production.yml "$@"
 }
 
@@ -114,6 +119,9 @@ case "$command" in
         sh backend/deploy/preflight.sh
         # Build before replacing running containers. Limit concurrent build work.
         COMPOSE_PARALLEL_LIMIT=1 production_compose build api worker frontend
+        if [ "${SMTP_GATEWAY_ENABLED:-false}" = true ]; then
+            COMPOSE_PARALLEL_LIMIT=1 production_compose build smtp_gateway
+        fi
         if ! production_compose up -d --no-build --wait --wait-timeout 180; then
             echo 'Deployment did not become healthy. Recent API/database/queue logs:' >&2
             production_compose logs --tail 100 api postgres nats >&2 || true

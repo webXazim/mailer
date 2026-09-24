@@ -14,6 +14,10 @@ The following must already be true:
 - Outbound IPv4 TCP 25 works.
 - Host ports 25, 465, 587, 993 and 8088 are unused.
 
+The Compose file binds the mail ports to `STALWART_IPV4` rather than every host
+address. This preserves the existing Stalwart identity while allowing Mailer's
+separate SMTP submission gateway to use a second public IPv4 address.
+
 Run:
 
 ```bash

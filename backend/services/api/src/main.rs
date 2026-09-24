@@ -6,6 +6,7 @@ mod delivery_events;
 mod dns_automation;
 mod domains;
 mod emails;
+mod smtp_gateway;
 mod stalwart;
 mod stalwart_events;
 mod suppressions;
@@ -62,6 +63,7 @@ pub(crate) struct AppState {
     workspace_monthly_email_limit: u64,
     workspace_concurrent_email_limit: u32,
     email_content_retention_days: u32,
+    smtp_gateway_secret: Option<String>,
 }
 
 #[tokio::main]
@@ -135,6 +137,9 @@ async fn main() -> anyhow::Result<()> {
         workspace_monthly_email_limit: settings.workspace_monthly_email_limit,
         workspace_concurrent_email_limit: settings.workspace_concurrent_email_limit,
         email_content_retention_days: settings.email_content_retention_days,
+        smtp_gateway_secret: std::env::var("SMTP_GATEWAY_SHARED_SECRET")
+            .ok()
+            .filter(|v| !v.is_empty()),
     };
     let _domain_verifier = tokio::spawn(domains::run_verifier(state.clone()));
     let app = Router::new()
@@ -150,6 +155,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(webhooks::routes())
         .merge(activity::routes())
         .merge(suppressions::routes())
+        .merge(smtp_gateway::routes())
         .with_state(state)
         .layer(DefaultBodyLimit::max(36_000_000))
         .layer(TimeoutLayer::with_status_code(

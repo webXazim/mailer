@@ -17,20 +17,20 @@ services:
       # dedicated address with matching AAAA, PTR and SPF authorization.
       - target: 25
         published: "25"
-        host_ip: 0.0.0.0
+        host_ip: ${STALWART_IPV4:-152.53.178.165}
         protocol: tcp
       - target: 465
         published: "465"
-        host_ip: 0.0.0.0
+        host_ip: ${STALWART_IPV4:-152.53.178.165}
         protocol: tcp
       - target: 587
         published: "587"
-        host_ip: 0.0.0.0
+        host_ip: ${STALWART_IPV4:-152.53.178.165}
         protocol: tcp
       # Business mailbox clients use IMAPS on the same shared Stalwart.
       - target: 993
         published: "993"
-        host_ip: 0.0.0.0
+        host_ip: ${STALWART_IPV4:-152.53.178.165}
         protocol: tcp
       # Access with an SSH tunnel; never publish the bootstrap UI publicly.
       - target: 8080

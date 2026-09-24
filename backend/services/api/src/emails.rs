@@ -277,7 +277,33 @@ async fn send_email(
         .and_then(|row| row.get::<Option<i32>, _>("concurrent_email_limit"))
         .map(i64::from)
         .unwrap_or(i64::from(state.workspace_concurrent_email_limit));
-    let ip = client_ip(peer.ip(), &headers, state.trust_proxy_headers);
+    // SMTP gateway requests bypass Nginx, so accept the SMTP peer address only
+    // when the private gateway proves possession of its separate shared secret.
+    let ip = if headers.contains_key("x-smtp-gateway-secret") {
+        if !super::smtp_gateway::trusted(&state, &headers) {
+            return error(
+                StatusCode::UNAUTHORIZED,
+                "invalid_gateway",
+                "Invalid SMTP gateway credentials",
+            );
+        }
+        match headers
+            .get("x-smtp-client-ip")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<IpAddr>().ok())
+        {
+            Some(ip) => ip,
+            None => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_client_ip",
+                    "SMTP client address is required",
+                )
+            }
+        }
+    } else {
+        client_ip(peer.ip(), &headers, state.trust_proxy_headers)
+    };
     let ip_rate = match sqlx::query_scalar::<_, i32>("INSERT INTO client_ip_rate_limits (client_ip, bucket_start, request_count) VALUES ($1, $2, 1) ON CONFLICT (client_ip, bucket_start) DO UPDATE SET request_count = client_ip_rate_limits.request_count + 1 RETURNING request_count")
         .bind(ip.to_string()).bind(bucket).fetch_one(&mut *tx).await {
         Ok(value) => value,

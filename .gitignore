@@ -10,6 +10,9 @@
 *.p12
 *.pfx
 *.crt
+secrets/
+.venv/
+__pycache__/
 *.agekey
 rclone.conf
 

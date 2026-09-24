@@ -122,6 +122,8 @@ For day-to-day production commands and incident recipes, use the
 workspace containment, service lifecycle, and recovery controls.
 
 Applications use one stable public email API backed by the independent SMTP transport.
+Customer SMTP submission is available as an optional, separately bound gateway;
+see [Customer SMTP submission](SMTP_SUBMISSION.md) for TLS, ports, keys and rollout.
 The endpoint, API key, idempotency key, request body, status polling, and webhooks
 remain stable across infrastructure upgrades.
 

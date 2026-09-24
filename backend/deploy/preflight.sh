@@ -24,6 +24,31 @@ case "${MTA_RETURN_PATH_PREFIX:-bounce}" in ''|*[!a-zA-Z0-9-]*) fail 'MTA_RETURN
 case "${SMTP_PORT:-465}" in ''|*[!0-9]*|0) fail 'SMTP_PORT must be a positive port number.' ;; esac
 test "${SMTP_PORT:-465}" -le 65535 || fail 'SMTP_PORT is outside the port range.'
 case "${SMTP_SECURITY:-implicit_tls}" in implicit_tls|starttls) ;; *) fail 'SMTP_SECURITY must be implicit_tls or starttls.' ;; esac
+case "${SMTP_GATEWAY_ENABLED:-false}" in
+    true)
+        gateway_secret=${SMTP_GATEWAY_SHARED_SECRET:-}
+        test "${#gateway_secret}" -ge 32 || fail 'SMTP_GATEWAY_SHARED_SECRET must be at least 32 characters.'
+        test -f "${SMTP_GATEWAY_TLS_DIR:-./secrets/smtp}/fullchain.pem" || fail 'SMTP gateway certificate is missing.'
+        test -f "${SMTP_GATEWAY_TLS_DIR:-./secrets/smtp}/privkey.pem" || fail 'SMTP gateway private key is missing.'
+        command -v openssl >/dev/null || fail 'OpenSSL is required to check SMTP gateway TLS.'
+        openssl x509 -in "${SMTP_GATEWAY_TLS_DIR:-./secrets/smtp}/fullchain.pem" -noout -checkhost smtp.mailer.crescentsphere.com >/dev/null || fail 'SMTP gateway certificate must cover smtp.mailer.crescentsphere.com.'
+        openssl x509 -in "${SMTP_GATEWAY_TLS_DIR:-./secrets/smtp}/fullchain.pem" -noout -checkend 604800 >/dev/null || fail 'SMTP gateway certificate expires within 7 days.'
+        bind_ip=${MAILER_SMTP_BIND_IP:-127.0.0.1}
+        case "$bind_ip" in 0.0.0.0|::|'') fail 'Bind the SMTP gateway to a specific IPv4 address.' ;; esac
+        for name in MAILER_SMTP_IMPLICIT_PORT MAILER_SMTP_STARTTLS_PORT; do
+            eval "value=\${$name:-}"
+            case "$value" in ''|*[!0-9]*|0) fail "$name must be a valid port." ;; esac
+            test "$value" -le 65535 || fail "$name is outside the port range."
+        done
+        test "${MAILER_SMTP_IMPLICIT_PORT}" != "${MAILER_SMTP_STARTTLS_PORT}" || fail 'SMTP gateway ports must differ.'
+        if [ "$bind_ip" = "${MTA_PUBLIC_IPV4:-152.53.178.165}" ] && { [ "$MAILER_SMTP_IMPLICIT_PORT" = 465 ] || [ "$MAILER_SMTP_STARTTLS_PORT" = 587 ]; }; then
+            fail 'Stalwart owns 465/587 on the primary mail IP. Use alternate ports or a second IP.'
+        fi
+        export COMPOSE_PROFILES=smtp
+        ;;
+    false) unset COMPOSE_PROFILES ;;
+    *) fail 'SMTP_GATEWAY_ENABLED must be true or false.' ;;
+esac
 case "${SMTP_TIMEOUT_SECONDS:-30}" in ''|*[!0-9]*|0) fail 'SMTP_TIMEOUT_SECONDS must be a positive integer.' ;; esac
 test "${#STALWART_WEBHOOK_TOKEN}" -ge 32 || fail 'STALWART_WEBHOOK_TOKEN must contain at least 32 characters.'
 test "${#STALWART_WEBHOOK_SIGNING_KEY}" -ge 32 || fail 'STALWART_WEBHOOK_SIGNING_KEY must contain at least 32 characters.'

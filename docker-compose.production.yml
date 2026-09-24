@@ -64,6 +64,7 @@ services:
     init: true
     environment:
       <<: *app-environment
+      SMTP_GATEWAY_SHARED_SECRET: ${SMTP_GATEWAY_SHARED_SECRET:-}
     ports:
       # Only the nginx listener is published. Docker assigns a free port.
       - "127.0.0.1:${FRONTEND_PORT:-0}:8081"
@@ -89,7 +90,7 @@ services:
       options:
         max-size: "20m"
         max-file: "5"
-    networks: [edge, internal, mail-transport]
+    networks: [edge, internal, mail-transport, submission]
 
   frontend:
     mem_limit: ${FRONTEND_MEMORY_LIMIT:-64m}
@@ -149,6 +150,41 @@ services:
     stop_grace_period: 60s
     logging: *app-logging
     networks: [edge, internal, mail-transport]
+
+  smtp_gateway:
+    profiles: [smtp]
+    build: ./smtp-gateway
+    image: crescentsphere/mailer-smtp-gateway:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    init: true
+    environment:
+      SMTP_GATEWAY_SHARED_SECRET: ${SMTP_GATEWAY_SHARED_SECRET:-}
+      MAILER_INTERNAL_API: http://api:8080
+    ports:
+      # Stalwart owns 465/587 on the primary address. Use a separate IP for public SMTP.
+      - "${MAILER_SMTP_BIND_IP:-127.0.0.1}:${MAILER_SMTP_IMPLICIT_PORT:-1465}:465"
+      - "${MAILER_SMTP_BIND_IP:-127.0.0.1}:${MAILER_SMTP_STARTTLS_PORT:-1587}:587"
+    volumes:
+      - ${SMTP_GATEWAY_TLS_DIR:-./secrets/smtp}:/tls:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('127.0.0.1',587),3); assert s.recv(80).startswith(b'220'); s.close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 0.5
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=32m"]
+    stop_grace_period: 30s
+    logging: *app-logging
+    networks: [submission]
 
   postgres:
     mem_limit: ${POSTGRES_MEMORY_LIMIT:-512m}
@@ -218,6 +254,7 @@ volumes:
 
 networks:
   edge:
+  submission:
   internal:
     internal: true
   mail-transport:

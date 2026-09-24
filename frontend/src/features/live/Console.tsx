@@ -21,7 +21,7 @@ const navigation: NavItem[] = [
   { path: '/api-keys', label: 'API keys', description: 'Issue scoped credentials for server-side integrations.', icon: KeyRound, admin: true, group: 'Configure' },
   { path: '/webhooks', label: 'Webhooks', description: 'Receive signed delivery events and inspect attempts.', icon: Webhook, admin: true, group: 'Configure' },
   { path: '/suppressions', label: 'Suppressions', description: 'Protect reputation by blocking invalid recipients.', icon: ShieldBan, admin: true, group: 'Configure' },
-  { path: '/developers', label: 'API guide', description: 'Integrate CS Mailer safely and predictably.', icon: BookOpen, group: 'Develop' }
+  { path: '/developers', label: 'Integration guide', description: 'Set up the CS Mailer API or SMTP submission.', icon: BookOpen, group: 'Develop' }
 ]
 const environmentKey = 'cs-mailer-environment'
 const authPaths = ['/login', '/signup', '/forgot-password', '/reset-password', '/verify-email', '/resend-verification']

@@ -26,9 +26,12 @@ test "$certificate_key" = "$private_key" || {
     echo 'Certificate and private key do not match.' >&2
     exit 1
 }
-install -d -m 0750 -o root -g 10001 "$target"
+# Preflight runs as the deploy user. Allow directory traversal so it can check
+# the public certificate without granting access to the private key.
+install -d -m 0751 -o root -g 10001 "$target"
 install -m 0644 -o root -g 10001 "$lineage/fullchain.pem" "$target/fullchain.pem"
 install -m 0640 -o root -g 10001 "$lineage/privkey.pem" "$target/privkey.pem"
+echo "Installed SMTP certificate in $target"
 
 if [ -f "$root/.env" ]; then
     cd "$root"

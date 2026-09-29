@@ -65,9 +65,11 @@ services:
     environment:
       <<: *app-environment
       SMTP_GATEWAY_SHARED_SECRET: ${SMTP_GATEWAY_SHARED_SECRET:-}
+      MAILER_OPERATOR_PASSWORD: ${MAILER_OPERATOR_PASSWORD:-}
     ports:
       # Only the nginx listener is published. Docker assigns a free port.
       - "127.0.0.1:${FRONTEND_PORT:-0}:8081"
+      - "127.0.0.1:18085:8082"
     depends_on:
       postgres:
         condition: service_healthy

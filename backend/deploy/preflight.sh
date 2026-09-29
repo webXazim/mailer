@@ -52,6 +52,8 @@ esac
 case "${SMTP_TIMEOUT_SECONDS:-30}" in ''|*[!0-9]*|0) fail 'SMTP_TIMEOUT_SECONDS must be a positive integer.' ;; esac
 test "${#STALWART_WEBHOOK_TOKEN}" -ge 32 || fail 'STALWART_WEBHOOK_TOKEN must contain at least 32 characters.'
 test "${#STALWART_WEBHOOK_SIGNING_KEY}" -ge 32 || fail 'STALWART_WEBHOOK_SIGNING_KEY must contain at least 32 characters.'
+operator_password=${MAILER_OPERATOR_PASSWORD:-}
+test "${#operator_password}" -ge 32 || fail 'Run sh manage operator-init to create the private site-operator password.'
 test "$STALWART_WEBHOOK_TOKEN" != "$STALWART_WEBHOOK_SIGNING_KEY" || fail 'Use different Stalwart webhook bearer and HMAC secrets.'
 case "${AUTH_EMAIL_DELIVERY_ENABLED:-false}" in
     true)

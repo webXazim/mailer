@@ -28,6 +28,7 @@ Commands:
   production-down     Stop production services
   production-logs     Follow production logs
   production-status   Show production services and assigned localhost port
+  operator-init       Generate the private site-operator password once
   pending-workspaces  List workspaces without production access
   approve-workspace   Manually enable production for a workspace UUID
   pause-workspace ID  Pause production admission and provider attempts
@@ -153,6 +154,9 @@ case "$command" in
     production-status)
         production_compose ps
         production_compose port api 8081
+        ;;
+    operator-init)
+        sh backend/deploy/operator-init.sh
         ;;
     pending-workspaces)
         production_compose exec -T postgres psql --username "${POSTGRES_USER:-mailer}" --dbname "${POSTGRES_DB:-mailer}" --no-align --field-separator=' | ' --command "SELECT w.id,u.email,w.name,w.created_at FROM workspaces w JOIN users u ON u.id=w.created_by WHERE NOT w.production_enabled ORDER BY w.created_at;"

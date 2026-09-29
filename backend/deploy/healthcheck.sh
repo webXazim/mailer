@@ -10,4 +10,8 @@ curl --fail --silent --show-error --max-time 10 "$PUBLIC_CONSOLE_URL/healthz" >/
 
 status=$(curl --silent --output /dev/null --write-out "%{http_code}" --max-time 10 "$PUBLIC_CONSOLE_URL/internal/v1/stalwart/events")
 test "$status" = "404"
+status=$(curl --silent --output /dev/null --write-out "%{http_code}" --max-time 10 "$PUBLIC_CONSOLE_URL/operator/")
+test "$status" = "404"
+status=$(curl --silent --output /dev/null --write-out "%{http_code}" --max-time 10 "http://127.0.0.1:18085/operator/")
+test "$status" = "401"
 echo "Public readiness, worker progress, queues, and private-route checks passed."

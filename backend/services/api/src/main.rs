@@ -6,6 +6,7 @@ mod delivery_events;
 mod dns_automation;
 mod domains;
 mod emails;
+mod operator;
 mod smtp_gateway;
 mod stalwart;
 mod stalwart_events;
@@ -64,6 +65,7 @@ pub(crate) struct AppState {
     workspace_concurrent_email_limit: u32,
     email_content_retention_days: u32,
     smtp_gateway_secret: Option<String>,
+    operator_password: Option<String>,
 }
 
 #[tokio::main]
@@ -140,6 +142,9 @@ async fn main() -> anyhow::Result<()> {
         smtp_gateway_secret: std::env::var("SMTP_GATEWAY_SHARED_SECRET")
             .ok()
             .filter(|v| !v.is_empty()),
+        operator_password: std::env::var("MAILER_OPERATOR_PASSWORD")
+            .ok()
+            .filter(|v| v.len() >= 32),
     };
     let _domain_verifier = tokio::spawn(domains::run_verifier(state.clone()));
     let app = Router::new()
@@ -147,6 +152,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/readyz", get(readyz))
         .route("/operationalz", get(operationalz))
         .merge(auth::routes())
+        .merge(operator::routes())
         .merge(api_keys::routes())
         .merge(domains::routes())
         .merge(dns_automation::routes())

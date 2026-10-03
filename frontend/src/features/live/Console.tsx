@@ -7,6 +7,7 @@ import {
 import { api, ApiError } from '../../lib/api/client'
 import { BrandLogo, Envelope, Environment, ErrorNotice, queryClient, Session, errorText, useOnlineStatus } from './shared'
 import { Authentication } from './Authentication'
+import { ConnectCallback } from './ConnectCallback'
 import { LandingPage } from './LandingPage'
 import { DeveloperDocs, Domains, Emails, Keys, Overview, Suppressions, Webhooks } from './Pages'
 import { LegalPage, NotFoundPage } from './PublicPages'
@@ -84,6 +85,7 @@ export default function Console() {
   if (location.pathname === '/') return <LandingPage signedIn={Boolean(session)} signIn={() => navigate('/login')} createAccount={() => navigate(session ? '/overview' : '/signup')} />
   if (location.pathname === '/terms') return <LegalPage kind="terms" />
   if (location.pathname === '/privacy') return <LegalPage kind="privacy" />
+  if (location.pathname === '/auth/connect/callback') return <ConnectCallback signedIn={value => { setSession(value); setSessionError('') }} />
   if (sessionError && !session && !authPaths.includes(location.pathname)) return <main className="standalone-error"><BrandLogo /><ErrorNotice error={sessionError} /><button className="button button--primary" onClick={() => void loadSession(false)}>Try again</button></main>
   if (!session || authPaths.includes(location.pathname)) {
     if (!authPaths.includes(location.pathname) && !publicPaths.includes(location.pathname)) return <NotFoundPage signedIn={false} />

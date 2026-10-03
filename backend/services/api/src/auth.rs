@@ -893,7 +893,7 @@ pub(crate) fn read_cookie(headers: &HeaderMap) -> Option<String> {
         })
         .map(str::to_owned)
 }
-fn cookie(token: &str, persistent: bool, clear: bool, production: bool) -> String {
+pub(crate) fn cookie(token: &str, persistent: bool, clear: bool, production: bool) -> String {
     let secure = if production { "; Secure" } else { "" };
     let name = if production {
         "__Host-cs_session"
@@ -909,7 +909,7 @@ fn cookie(token: &str, persistent: bool, clear: bool, production: bool) -> Strin
     };
     format!("{name}={token}; Path=/; HttpOnly; SameSite=Lax; {max_age}{secure}")
 }
-fn with_cookie(mut response: Response, value: String) -> Response {
+pub(crate) fn with_cookie(mut response: Response, value: String) -> Response {
     if let Ok(header_value) = HeaderValue::from_str(&value) {
         response
             .headers_mut()
@@ -944,7 +944,7 @@ async fn workspace_context(state: &AppState, id: Uuid) -> Result<WorkspaceContex
 
 static PASSWORD_WORK: LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
     LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
-async fn password_hash_async(password: String) -> anyhow::Result<String> {
+pub(crate) async fn password_hash_async(password: String) -> anyhow::Result<String> {
     let permit = PASSWORD_WORK.clone().acquire_owned().await?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
@@ -968,7 +968,7 @@ fn error(status: StatusCode, code: &str, message: &str) -> Response {
     (status, Json(json!({"code": code, "message": message}))).into_response()
 }
 
-async fn enforce_auth_limit(state: &AppState, key: &str, limit: i32) -> Result<(), Response> {
+pub(crate) async fn enforce_auth_limit(state: &AppState, key: &str, limit: i32) -> Result<(), Response> {
     let bucket = chrono::Utc::now()
         .with_second(0)
         .and_then(|value| value.with_nanosecond(0))

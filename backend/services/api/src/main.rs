@@ -2,6 +2,8 @@ mod account_email_templates;
 mod activity;
 mod api_keys;
 mod auth;
+mod federation;
+mod federation_provider;
 mod delivery_events;
 mod dns_automation;
 mod domains;
@@ -49,6 +51,10 @@ pub(crate) struct AppState {
     stalwart_webhook_signing_key: Option<String>,
     smtp_delivery_available: bool,
     console_origin: String,
+    connect_client_id: Option<String>,
+    connect_client_secret: Option<String>,
+    federation_client_id: Option<String>,
+    federation_client_secret: Option<String>,
     account_email_from: Option<String>,
     auth_email_delivery_enabled: bool,
     turnstile_site_key: Option<String>,
@@ -124,6 +130,10 @@ async fn main() -> anyhow::Result<()> {
             && settings.stalwart_webhook_token.is_some()
             && settings.stalwart_webhook_signing_key.is_some(),
         console_origin: settings.console_origin.clone(),
+        connect_client_id: std::env::var("MAILER_CONNECT_CLIENT_ID").ok().filter(|value| !value.is_empty()),
+        connect_client_secret: std::env::var("MAILER_CONNECT_CLIENT_SECRET").ok().filter(|value| !value.is_empty()),
+        federation_client_id: std::env::var("MAILER_FEDERATION_CLIENT_ID").ok().filter(|value| !value.is_empty()),
+        federation_client_secret: std::env::var("MAILER_FEDERATION_CLIENT_SECRET").ok().filter(|value| !value.is_empty()),
         account_email_from: settings.account_email_from.clone(),
         auth_email_delivery_enabled: settings.auth_email_delivery_enabled,
         turnstile_site_key: settings.turnstile_site_key.clone(),
@@ -152,6 +162,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/readyz", get(readyz))
         .route("/operationalz", get(operationalz))
         .merge(auth::routes())
+        .merge(federation::routes())
+        .merge(federation_provider::routes())
         .merge(operator::routes())
         .merge(api_keys::routes())
         .merge(domains::routes())

@@ -426,7 +426,7 @@ async fn revoke_token(client_id: &str, client_secret: &str, token: &str) {
     }
 }
 
-async fn http_request(
+pub(crate) async fn http_request(
     method: Method,
     url: &str,
     headers: &[(header::HeaderName, String)],

@@ -174,7 +174,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(activity::routes())
         .merge(suppressions::routes())
         .merge(smtp_gateway::routes())
-        .with_state(state)
+        .with_state(state.clone())
         .layer(DefaultBodyLimit::max(36_000_000))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -211,6 +211,7 @@ async fn main() -> anyhow::Result<()> {
                     axum::http::HeaderName::from_static("idempotency-key"),
                 ]),
         )
+        .merge(federation_provider::presence_routes().with_state(state))
         .layer(SetRequestIdLayer::new(
             axum::http::HeaderName::from_static("x-request-id"),
             MakeRequestUuid,

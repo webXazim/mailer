@@ -1,3 +1,4 @@
+import { useCsAccounts } from '../../lib/csAccounts'
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { ArrowLeft, Check, KeyRound, LockKeyhole, Mail, ShieldCheck, Sparkles } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -32,6 +33,7 @@ export function Authentication({ signedIn }: { signedIn: (session: Session) => v
   const mode = location.pathname === '/signup' ? 'signup' : location.pathname === '/forgot-password' ? 'forgot' : location.pathname === '/reset-password' ? 'reset' : location.pathname === '/verify-email' ? 'verify' : location.pathname === '/resend-verification' ? 'resend' : 'login'
   const config = useResource<AuthConfig>('/v1/auth/config', 60_000)
   const connect = useResource<{ enabled: boolean }>('/v1/auth/connect/config', 60_000)
+  const csAccounts = useCsAccounts('mailer', Boolean(connect.result?.data.enabled))
   const [notice, setNotice] = useState(''), [turnstileToken, setTurnstileToken] = useState('')
   useEffect(() => { setNotice(''); setTurnstileToken('') }, [mode])
   const authQuery = new URLSearchParams(location.search)
@@ -90,7 +92,7 @@ export function Authentication({ signedIn }: { signedIn: (session: Session) => v
           <ErrorNotice error={action.error || config.error} />{notice && <Notice tone="success">{notice}</Notice>}
           <Submit busy={action.busy} className="auth-submit">{mode === 'signup' ? 'Create account' : mode === 'forgot' ? 'Send reset instructions' : mode === 'resend' ? 'Resend verification code' : mode === 'verify' ? 'Verify account' : mode === 'reset' ? 'Update password' : 'Sign in'}</Submit>
         </form>
-        {['login', 'signup'].includes(mode) && connect.result?.data.enabled && <button className="text-link" type="button" onClick={() => void action.run(beginConnectSignIn)}>Use an existing CrescentSphere account</button>}
+        {['login', 'signup'].includes(mode) && csAccounts.length > 0 && <button className="text-link" type="button" onClick={() => void action.run(beginConnectSignIn)}>Sign in with CS account</button>}
         <div className="auth-links"><button className="text-link" onClick={() => navigate(mode === 'login' ? '/signup' : mode === 'resend' && verificationEmail ? `/verify-email?email=${encodeURIComponent(verificationEmail)}` : '/login')}>{mode === 'login' ? 'Create a CS Mailer account' : mode === 'resend' && verificationEmail ? 'Back to code entry' : 'Back to sign in'}</button>{mode === 'login' && <>{config.result?.data.passwordRecovery && <button className="text-link" onClick={() => navigate('/forgot-password')}>Forgot password?</button>}{config.result?.data.emailVerification && <button className="text-link" onClick={() => navigate('/resend-verification')}>Resend verification</button>}</>}{mode === 'verify' && <button className="text-link" onClick={() => navigate(`/resend-verification?email=${encodeURIComponent(verificationEmail)}`)}>Send a new code</button>}</div>
       </div>
       <p className="auth-main__footnote">New accounts begin in test mode · Verify a sender domain to unlock production</p>

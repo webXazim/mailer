@@ -80,7 +80,7 @@ export function Authentication({ signedIn }: { signedIn: (session: Session) => v
 
     <section className="auth-main">
       <div className="auth-card">
-        <button className="auth-back" onClick={() => navigate('/')}><ArrowLeft size={14} />CS Mailer home</button>
+        <a className="auth-back" href="https://crescentsphere.com"><ArrowLeft size={14} />CrescentSphere home</a>
         <header><span className="auth-icon">{mode === 'signup' ? <Sparkles size={20} /> : mode === 'reset' ? <LockKeyhole size={20} /> : mode === 'verify' ? <KeyRound size={20} /> : <Mail size={20} />}</span><p className="eyebrow">CS Mailer account</p><h2>{title}</h2><p>{description}</p></header>
         <form key={mode} className="form-stack auth-form" onSubmit={submit}>
           {mode === 'signup' && <div className="form-two"><Field label="First name"><input name="first" autoComplete="given-name" placeholder="Alex" required maxLength={80} /></Field><Field label="Last name"><input name="last" autoComplete="family-name" placeholder="Morgan" required maxLength={80} /></Field></div>}

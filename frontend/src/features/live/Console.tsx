@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity, BookOpen, ChevronRight, Globe2, KeyRound, LogOut, Mail, Menu,
   Send, ShieldBan, UserRound, Webhook, X
@@ -8,7 +8,6 @@ import { api, ApiError } from '../../lib/api/client'
 import { BrandLogo, Envelope, Environment, ErrorNotice, queryClient, Session, errorText, useOnlineStatus } from './shared'
 import { Authentication } from './Authentication'
 import { ConnectCallback } from './ConnectCallback'
-import { LandingPage } from './LandingPage'
 import { DeveloperDocs, Domains, Emails, Keys, Overview, Suppressions, Webhooks } from './Pages'
 import { LegalPage, NotFoundPage } from './PublicPages'
 import { SendDialog } from './SendDialog'
@@ -82,7 +81,7 @@ export default function Console() {
   }, [location.pathname])
 
   if (loading) return <main className="boot-screen"><BrandLogo /><p><span />Connecting to CS Mailer</p></main>
-  if (location.pathname === '/') return <LandingPage signedIn={Boolean(session)} signIn={() => navigate('/login')} createAccount={() => navigate(session ? '/overview' : '/signup')} />
+  if (location.pathname === '/') return <Navigate to={`${session ? '/overview' : '/login'}${location.search}`} replace />
   if (location.pathname === '/terms') return <LegalPage kind="terms" />
   if (location.pathname === '/privacy') return <LegalPage kind="privacy" />
   if (location.pathname === '/auth/connect/callback') return <ConnectCallback signedIn={value => { setSession(value); setSessionError('') }} />

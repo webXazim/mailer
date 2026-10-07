@@ -7,7 +7,7 @@ export function LandingPage({ signedIn, signIn, createAccount }: { signedIn: boo
   const scroll = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   return <main className="public-home">
     <header className="public-nav">
-      <button className="brand-button" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} aria-label="CS Mailer home"><BrandLogo /></button>
+      <div className="brand-button"><BrandLogo /></div>
       <nav aria-label="Public navigation">
         <button onClick={() => scroll('platform')}>Product</button>
         <button onClick={() => scroll('developers')}>Developers</button>
@@ -77,6 +77,6 @@ export function LandingPage({ signedIn, signIn, createAccount }: { signedIn: boo
 
     <section className="public-final-cta"><div><p className="public-kicker public-kicker--light">Start with simulated delivery</p><h2>Build the integration before you touch a real inbox.</h2><p>Create account, issue a test key, and validate your first transactional flow.</p></div><button className="public-button public-button--light" onClick={createAccount}>{signedIn ? 'Open CS Mailer' : 'Create account'} <ArrowRight size={17} /></button></section>
 
-    <footer className="public-footer"><div className="public-footer__brand"><BrandLogo /><p>Developer email infrastructure for transactional application mail.</p></div><div><strong>Platform</strong><button onClick={() => scroll('platform')}>Product</button><button onClick={() => scroll('developers')}>Developers</button>{!signedIn && <button onClick={signIn}>Sign in</button>}</div><div><strong>Legal</strong><button onClick={() => navigate('/privacy')}>Privacy policy</button><button onClick={() => navigate('/terms')}>Terms of service</button></div><div className="public-footer__meta"><span>© {new Date().getFullYear()} CrescentSphere</span><span>CS Mailer</span></div></footer>
+    <footer className="public-footer"><div className="public-footer__brand"><strong>CS Mailer</strong><p>Developer email infrastructure for transactional application mail.</p></div><div><strong>Platform</strong><button onClick={() => scroll('platform')}>Product</button><button onClick={() => scroll('developers')}>Developers</button>{!signedIn && <button onClick={signIn}>Sign in</button>}</div><div><strong>Legal</strong><button onClick={() => navigate('/privacy')}>Privacy policy</button><button onClick={() => navigate('/terms')}>Terms of service</button></div><div className="public-footer__meta"><span>© {new Date().getFullYear()} CrescentSphere</span><span>CS Mailer</span></div></footer>
   </main>
 }

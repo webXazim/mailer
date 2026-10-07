@@ -1,3 +1,4 @@
+import { ServiceBrandSwitcher } from "../../components/navigation/ServiceBrandSwitcher";
 import { ReactNode, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Check, Copy, LoaderCircle, RefreshCw, X } from 'lucide-react'
 import { api } from '../../lib/api/client'
@@ -302,10 +303,7 @@ export function useAction() {
 }
 
 export function BrandLogo({ compact = false, className = '' }: { compact?: boolean; className?: string }) {
-  return <span className={`cs-brand ${compact ? 'cs-brand--compact' : ''} ${className}`.trim()}>
-    <span className="cs-brand__mark"><img src="/cs-mailer-logo.png" alt="" /></span>
-    {!compact && <span className="cs-brand__copy"><strong>CS Mailer</strong><small>by CrescentSphere</small></span>}
-  </span>
+  return <div className={className}><ServiceBrandSwitcher activeService="mailer" compact={compact} /></div>
 }
 export function ErrorNotice({ error }: { error?: string }) { return error ? <p className="notice notice--danger" role="alert" aria-live="assertive">{error}</p> : null }
 export function Notice({ children, tone = 'info' }: { children: ReactNode; tone?: 'info' | 'success' | 'warning' | 'danger' }) { return <p className={`notice notice--${tone}`} role="status" aria-live="polite">{children}</p> }

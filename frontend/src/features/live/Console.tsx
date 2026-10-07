@@ -81,7 +81,7 @@ export default function Console() {
     document.title = `CS Mailer · ${names[location.pathname] ?? consoleName ?? 'Developer Email Infrastructure'}`
   }, [location.pathname])
 
-  if (loading) return <main className="boot-screen"><div className="boot-mark"><img src="/cs-mailer-logo.png" alt="" /></div><BrandLogo /><p><span />Connecting to CS Mailer</p></main>
+  if (loading) return <main className="boot-screen"><BrandLogo /><p><span />Connecting to CS Mailer</p></main>
   if (location.pathname === '/') return <LandingPage signedIn={Boolean(session)} signIn={() => navigate('/login')} createAccount={() => navigate(session ? '/overview' : '/signup')} />
   if (location.pathname === '/terms') return <LegalPage kind="terms" />
   if (location.pathname === '/privacy') return <LegalPage kind="privacy" />
@@ -116,7 +116,7 @@ export default function Console() {
 
   return <div className="app-shell">
     <aside className={`app-sidebar ${mobileOpen ? 'is-open' : ''}`}>
-      <div className="sidebar-brand"><button className="brand-button" onClick={() => go('/overview')}><BrandLogo /></button><button className="icon-button sidebar-close" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X size={17} /></button></div>
+      <div className="sidebar-brand"><div className="brand-button"><BrandLogo /></div><button className="icon-button sidebar-close" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X size={17} /></button></div>
       <nav className="sidebar-nav" aria-label="Primary navigation">{groupedNavigation.map(group => <div className="nav-group" key={group.group}><span>{group.group}</span>{group.items.map(item => <button className={route.path === item.path ? 'is-active' : ''} key={item.path} onClick={() => go(item.path)}><item.icon size={16} /><b>{item.label}</b>{route.path === item.path && <i />}</button>)}</div>)}</nav>
       <div className={`sidebar-live ${online ? '' : 'is-offline'}`.trim()}><span><i />{online ? 'Console sync active' : 'Offline'}</span><small>{online ? 'Views refresh in the background.' : 'Showing cached data until connection returns.'}</small></div>
       <div className="sidebar-account"><button onClick={() => setProfileOpen(value => !value)} aria-expanded={profileOpen}><span className="user-avatar"><UserRound size={15} /></span><span><strong>{session.user.name}</strong><small>{session.user.email}</small></span><ChevronRight className={profileOpen ? 'is-open' : ''} size={15} /></button>{profileOpen && <div className="account-popover"><div><small>Role</small><strong>{session.user.role}</strong></div><button onClick={() => void signOut()}><LogOut size={14} />Sign out</button></div>}</div>

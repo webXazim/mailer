@@ -72,7 +72,7 @@ export function Authentication({ signedIn }: { signedIn: (session: Session) => v
 
   return <main className="auth-page">
     <aside className="auth-aside">
-      <button className="brand-button auth-brand" onClick={() => navigate('/')}><BrandLogo /></button>
+      <div className="brand-button auth-brand"><BrandLogo /></div>
       <div className="auth-aside__visual" aria-hidden="true"><span className="orbit orbit--one" /><span className="orbit orbit--two" /><img src="/cs-mailer-logo.png" alt="" /></div>
       <div className="auth-aside__copy"><p className="public-kicker public-kicker--light">Developer email infrastructure</p><h1>Build the mail flow. See what happened next.</h1><p>Send transactional email, verify domains, inspect delivery, manage suppressions, and connect signed webhooks from one console.</p><ul><li><Check size={15} />Safe simulated test environment</li><li><Check size={15} />Environment-scoped API credentials</li><li><Check size={15} />Per-message delivery visibility</li></ul></div>
       <p className="auth-aside__foot"><ShieldCheck size={14} />Secure sessions · production safeguards · signed webhooks</p>
